@@ -1,9 +1,11 @@
 
-/*
+
 Gabriel Henrique de Paula Vilas Boas Correa - RM: 551395
+
 Pedro Nezi Godoy - RM: 550370
+
 Gustavo Kenji Tsuruoka - RM: 550818
-*/
+
 
 # Festo Digital Twin Vision - Frontend
 
