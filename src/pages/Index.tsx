@@ -6,7 +6,7 @@ import Login from '@/components/Login';
 import Header from '@/components/Header';
 import Sidebar from '@/components/Sidebar';
 import LiveMetrics from '@/components/dashboard/LiveMetrics';
-import AIClassification from '@/components/dashboard/AIClassification';
+//import AIClassification from '@/components/dashboard/AIClassification';
 import ThreeDModel from '@/components/dashboard/ThreeDModel';
 
 const Index = () => {
@@ -59,10 +59,10 @@ const Index = () => {
               <div className="col-span-12 md:col-span-6">
                 <LiveMetrics />
               </div>
-              <div className="col-span-12 md:col-span-6">
+              {/* <div className="col-span-12 md:col-span-6">
                 <AIClassification />
-              </div>
-              
+              </div> */}
+
               {/* 3D Model Visualization */}
               <div className="col-span-12">
                 <ThreeDModel />
