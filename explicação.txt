@@ -1,0 +1,142 @@
+📌 Explicação das rotas e funcionamento do sistema
+1. Estrutura geral
+
+O backend foi feito em FastAPI (Python) e expõe rotas HTTP e WebSocket.
+O frontend (React + Vite/TSX) consome essas rotas para exibir em tempo real ou “replay” os dados dos sensores.
+
+As tabelas envolvidas:
+
+opc_samples → variáveis OPC (fins de curso, sinais digitais etc.)
+
+mpu_samples → dados dos acelerômetros MPU (vibração)
+
+INICIA e PARA → sinais OPC usados para calcular ciclos por minuto (CPM)
+
+2. Rotas principais
+Healthcheck
+GET /health
+
+
+Retorna {"status": "ok", "db_time": ...}
+
+Usado para verificar se API e banco estão respondendo.
+
+OPC – Última amostra
+GET /opc/latest?name=<sinal>
+
+
+Exemplo: /opc/latest?name=Recuado_1S1
+
+Retorna a última linha da tabela opc_samples para o sinal informado.
+
+Exemplo de resposta:
+
+{
+  "ts_utc": "2025-09-05T23:11:40Z",
+  "name": "Recuado_1S1",
+  "value_bool": true
+}
+
+OPC – Histórico
+GET /opc/history?name=<sinal>&limit=20000&asc=true&since=-1d
+
+
+Retorna várias amostras ordenadas no tempo.
+
+name = nome do sinal OPC (ex.: Recuado_1S1, Avancado_1S2, INICIA, PARA)
+
+limit = quantidade máxima de pontos (normalmente 20.000)
+
+asc=true = ordenação crescente no tempo
+
+since = intervalo relativo (ex.: -1d = último dia)
+
+Exemplo de item:
+
+{
+  "ts_utc": "2025-09-05T23:11:40Z",
+  "value_bool": 0
+}
+
+MPU – Última amostra
+GET /mpu/latest?id=MPUA1
+
+
+Retorna o último registro de vibração de um acelerômetro específico.
+
+Exemplo:
+
+{
+  "ts_utc": "2025-09-05T23:11:40Z",
+  "id": "MPUA1",
+  "ax_g": 0.012,
+  "ay_g": -0.004,
+  "az_g": 0.998,
+  "gx_dps": 0.1,
+  "gy_dps": 0.0,
+  "gz_dps": 0.2,
+  "temp_c": 28.3
+}
+
+MPU – Histórico
+GET /mpu/history?id=MPUA1&limit=20000&asc=true&since=-1d
+
+
+Retorna uma lista de amostras de vibração (aceleração X/Y/Z em “g”).
+
+Usado para calcular RMS de vibração ao longo do tempo.
+
+3. Lógica no Frontend
+
+O frontend não faz requisições a cada 2s.
+👉 Ele baixa todo o histórico de uma vez (limit=20000 pontos) e depois roda um “player” que avança o índice (idx) a cada 2 segundos.
+
+No LiveMetrics.tsx, a lógica funciona assim:
+
+Status atual
+Calculado a partir das combinações de fins de curso:
+
+(recuado=1, avancado=0) → fechado
+
+(recuado=0, avancado=1) → aberto
+
+(1,1) → erro
+
+(0,0) → indef
+Resultado mostrado como:
+
+A1:aberto | A2:fechado
+
+
+Vibration
+Pega janela de 50 amostras do MPU e calcula RMS nas três direções.
+Exemplo exibido:
+
+0.619 g
+
+
+CPM (Cycles Per Minute)
+A partir dos sinais INICIA e PARA, o frontend detecta bordas de subida (transições 0→1).
+Cada par de eventos conta como um ciclo.
+É feito cálculo na janela de 200 amostras para estimar ciclos/minuto.
+Exemplo exibido:
+
+12.30 cpm
+
+4. Resumindo o fluxo
+
+Backend FastAPI fornece rotas /opc/... e /mpu/... → pega do MySQL.
+
+Frontend chama cada rota só 1 vez para baixar o histórico.
+
+Um player interno (setInterval) avança o índice a cada 2s.
+
+Os valores de Status atual, Vibration e CPM são recalculados e exibidos a cada frame.
+
+📌 Benefícios dessa abordagem
+
+Evita sobrecarregar o backend com requisições a cada 2s.
+
+Permite replay histórico (não só live).
+
+Mantém a lógica idêntica ao protótipo em test.html, mas integrada ao React.
