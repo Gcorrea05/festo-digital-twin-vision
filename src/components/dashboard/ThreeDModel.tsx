@@ -72,19 +72,25 @@ const ThreeDModel = () => {
         {/* Área de exibição */}
         <div className="h-96 w-full relative bg-black/5 dark:bg-white/5 rounded-md overflow-hidden flex items-center justify-center">
           {mode === "3d" ? (
-            <Canvas camera={{ position: [8, 6, 10], fov: 50 }}>
+            <Canvas camera={{ position: [30, 24, 42], fov: 45, near: 0.1, far: 3000 }}>
               <ambientLight intensity={0.5} />
               <pointLight position={[10, 10, 10]} intensity={1} />
               <pointLight position={[-10, -10, -10]} intensity={0.5} />
 
               {/* Escolha do modelo */}
               {selectedModel === "model1" ? (
-                <BlenderModel path="/model.glb" />
+                <BlenderModel key="A1" path="/A1.glb" />
               ) : (
-                <BlenderModel path="/model.glb" />
+                <BlenderModel key="A2" path="/A2.glb" />
               )}
 
-              <OrbitControls ref={controlsRef} />
+              <OrbitControls 
+              ref={controlsRef} 
+              enableZoom
+              minDistance={5}
+              maxDistance={250} 
+              
+              />
             </Canvas>
           ) : (
             <video
