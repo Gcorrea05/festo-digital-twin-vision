@@ -1,4 +1,3 @@
-// src/components/dashboard/KpiCard.tsx
 // Card de KPI com semáforo e mini-trend embutível
 // - Usa shadcn/ui Card
 // - Exibe título, valor + unidade, badge de severidade e área para sparkline
@@ -13,7 +12,7 @@ type Props = {
   value?: number | string | null;
   unit?: string;
   severity?: Severity;
-  hint?: string; // tooltip/descrição curta (opcional, pode virar tooltip depois)
+  // hint?: string; // removido da UI (sem subtitle)
   /**
    * Render prop para um gráfico pequenininho (sparkline).
    * Ex.: <MiniSparkline data={...} />
@@ -47,10 +46,8 @@ function badgeClass(sev: Severity = "gray") {
 function formatValue(value?: number | string | null, decimals = 2): string {
   if (value === null || value === undefined) return "—";
   if (typeof value === "number") {
-    // Evita notação científica em números pequenos
     const fixed = value.toFixed(decimals);
-    // remove zeros desnecessários ao fim
-    return parseFloat(fixed).toString();
+    return parseFloat(fixed).toString(); // tira zeros à direita
   }
   return String(value);
 }
@@ -60,7 +57,6 @@ export default function KpiCard({
   value = null,
   unit,
   severity = "gray",
-  hint,
   trend,
   loading = false,
   decimals = 2,
@@ -80,16 +76,12 @@ export default function KpiCard({
           </CardTitle>
           <span className={badgeClass(severity)}>{severity.toUpperCase()}</span>
         </div>
-        {hint ? (
-          <p className="mt-1 text-[11px] text-zinc-400 dark:text-zinc-500">
-            {hint}
-          </p>
-        ) : null}
+        {/* Subtitle/hint removido da UI */}
       </CardHeader>
       <CardContent className="pt-0">
         <div className="flex items-end justify-between gap-4">
           <div className="flex-1">
-            <div className="text-3xl font-semibold tracking-tight">
+            <div className="text-xl font-semibold tracking-tight">
               {display}
               {withUnit}
             </div>
