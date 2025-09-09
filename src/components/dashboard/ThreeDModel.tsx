@@ -1,134 +1,174 @@
-import React, { useRef, useState, useEffect } from "react";
-import { Canvas } from "@react-three/fiber";
+import React, { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Move3D, Square, Video, Box } from "lucide-react";
 
-// Componente genérico para carregar um modelo
-const BlenderModel = ({ path }: { path: string }) => {
-  const { scene } = useGLTF(path);
-  return <primitive object={scene} scale={1.5} />;
-};
+import { useActuatorSelection } from "@/context/ActuatorSelectionContext";
+import { useLive } from "@/context/LiveContext";
 
-const ThreeDModel = () => {
-  const controlsRef = useRef<any>(null);
-  const [mode, setMode] = useState<"3d" | "live">("3d"); // alterna entre 3D e Live
-  const [selectedModel, setSelectedModel] = useState<"model1" | "model2">("model1"); // modelo selecionado
-  const videoRef = useRef<HTMLVideoElement>(null);
+// ----------------- Tipos auxiliares -----------------
+type Facets = { S1?: 0 | 1; S2?: 0 | 1 };
+type ActuatorSnapshot = { id: number; facets?: Facets };
 
-  const resetCamera = () => {
-    if (controlsRef.current) {
-      controlsRef.current.object.position.set(8, 6, 10);
-      controlsRef.current.object.lookAt(new THREE.Vector3(0, 0, 0));
-      controlsRef.current.update();
-    }
+// ----------------- Constantes -----------------
+const MODEL_URLS: Record<1 | 2, string> = { 1: "/A1.glb", 2: "/A2.glb" };
+
+const AXIS: "x" | "y" | "z" = "z"; // eixo da animação
+const STROKE = 0.25;                // curso do pistão
+const LERP = 0.18;                  // suavização (0..1)
+
+// ----------------- Helpers -----------------
+function useFitToObject() {
+  const { camera } = useThree();
+  // Nota: não dá para pegar o OrbitControls direto via hook;
+  // se você precisar, pode ligar um ref no <OrbitControls /> e passar aqui via contexto/prop.
+  return (obj: THREE.Object3D) => {
+    const box = new THREE.Box3().setFromObject(obj);
+    if (!isFinite(box.min.x) || !isFinite(box.max.x)) return;
+
+    const size = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    box.getSize(size);
+    box.getCenter(center);
+
+    const maxSize = Math.max(size.x, size.y, size.z);
+    const distance = maxSize * 2.2;
+
+    camera.position.set(
+      center.x + distance,
+      center.y + distance * 0.6,
+      center.z + distance
+    );
+    (camera as any).updateProjectionMatrix?.();
+    // Se quiser recentrar o OrbitControls, passe um ref pela árvore e atualize o target lá.
   };
+}
 
-  // Ativa a webcam quando modo "live" for selecionado
+function targetFromFacets(f?: Facets): number {
+  if (!f) return -1;
+  const open = f.S1 === 1;
+  const closed = f.S2 === 1;
+  if (open && !closed) return STROKE; // avançado
+  if (!open && closed) return 0;      // recuado
+  return -1;                          // indeterminado (não move)
+}
+
+function findPistonNode(root: THREE.Object3D): THREE.Object3D {
+  const wanted = ["piston", "pistao", "rod", "haste", "embolo", "cylinder"];
+  let chosen: THREE.Object3D | null = null;
+  root.traverse((o) => {
+    const n = (o.name || "").toLowerCase();
+    if (!chosen && wanted.some((w) => n.includes(w))) chosen = o;
+  });
+  return chosen || root;
+}
+
+// ----------------- Componentes -----------------
+function GLBActuator({ which, facets }: { which: 1 | 2; facets?: Facets }) {
+  const { scene } = useGLTF(MODEL_URLS[which]);
+  const group = useRef<THREE.Group>(null);
+  const pistonRef = useRef<THREE.Object3D | null>(null);
+  const targetRef = useRef(-1);
+  const fit = useFitToObject();
+
+  // alvo inicial
   useEffect(() => {
-    if (mode === "live" && videoRef.current) {
-      navigator.mediaDevices
-        .getUserMedia({ video: true })
-        .then((stream) => {
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-          }
-        })
-        .catch((err) => {
-          console.error("Erro ao acessar webcam:", err);
-        });
-    }
-  }, [mode]);
+    const t = targetFromFacets(facets);
+    targetRef.current = t >= 0 ? t : 0;
+  }, []); // intencionalmente executa uma vez
+
+  // carrega/clona o GLB no grupo
+  useEffect(() => {
+    if (!scene || !group.current) return;
+    const clone = scene.clone(true) as THREE.Group;
+    group.current.clear();
+    group.current.add(clone);
+    fit(clone);
+    pistonRef.current = findPistonNode(clone);
+  }, [scene, fit]);
+
+  // atualiza alvo quando mudar facets
+  useEffect(() => {
+    const t = targetFromFacets(facets);
+    if (t >= 0) targetRef.current = t;
+  }, [facets]);
+
+  // anima a haste/pistão
+  useFrame(() => {
+    const p = pistonRef.current;
+    if (!p) return;
+    const tgt = targetRef.current;
+    if (tgt < 0) return;
+
+    if (AXIS === "z") p.position.z += (tgt - p.position.z) * LERP;
+    else if (AXIS === "x") p.position.x += (tgt - p.position.x) * LERP;
+    else p.position.y += (tgt - p.position.y) * LERP;
+  });
+
+  return <group ref={group} />;
+}
+
+useGLTF.preload(MODEL_URLS[1]);
+useGLTF.preload(MODEL_URLS[2]);
+
+export default function ThreeDModel() {
+  const { selectedId, setSelectedId } = useActuatorSelection();
+  const { snapshot } = useLive();
+  const [modelIndex, setModelIndex] = useState<1 | 2>(1);
+
+  // manter contexto de seleção sincronizado
+  useEffect(() => {
+    setSelectedId(modelIndex);
+  }, [modelIndex, setSelectedId]);
+
+  // ----------- A CORREÇÃO DO TS(7006) ESTÁ AQUI -----------
+  const facets = useMemo(() => {
+    const list = (snapshot?.actuators ?? []) as ActuatorSnapshot[];
+    const a =
+      list.find((a) => a.id === modelIndex) ??
+      list[Number(modelIndex) - 1]; // fallback por índice (A1/A2)
+    return a?.facets;
+  }, [snapshot, modelIndex]);
+  // --------------------------------------------------------
 
   return (
-    <Card className="col-span-12">
-      <CardHeader className="pb-2">
-        <CardTitle>3D Model Visualization</CardTitle>
-      </CardHeader>
-
-      {/* Seletor de modelos */}
-      <div className="flex gap-2 px-4 pb-2">
-        <Button
-          variant={selectedModel === "model1" ? "default" : "outline"}
-          size="sm"
-          onClick={() => setSelectedModel("model1")}
+    <div className="w-full rounded-xl border border-zinc-200 dark:border-zinc-800 p-3">
+      <div className="mb-3 flex items-center gap-2">
+        <button
+          className={`px-3 py-1 rounded-md text-sm ${
+            modelIndex === 1 ? "bg-primary text-white" : "bg-zinc-200 dark:bg-zinc-800"
+          }`}
+          onClick={() => setModelIndex(1)}
         >
-          <Box className="w-4 h-4 mr-2" />
           Modelo 1
-        </Button>
-        <Button
-          variant={selectedModel === "model2" ? "default" : "outline"}
-          size="sm"
-          onClick={() => setSelectedModel("model2")}
+        </button>
+        <button
+          className={`px-3 py-1 rounded-md text-sm ${
+            modelIndex === 2 ? "bg-primary text-white" : "bg-zinc-200 dark:bg-zinc-800"
+          }`}
+          onClick={() => setModelIndex(2)}
         >
-          <Box className="w-4 h-4 mr-2" />
           Modelo 2
-        </Button>
+        </button>
+        <div className="ml-auto text-xs text-zinc-500">
+          Atuador: A{selectedId} • Modo: {snapshot?.system?.mode ?? "—"}
+        </div>
       </div>
 
-      <CardContent className="flex flex-col space-y-4">
-        {/* Área de exibição */}
-        <div className="h-96 w-full relative bg-black/5 dark:bg-white/5 rounded-md overflow-hidden flex items-center justify-center">
-          {mode === "3d" ? (
-            <Canvas camera={{ position: [30, 24, 42], fov: 45, near: 0.1, far: 3000 }}>
-              <ambientLight intensity={0.5} />
-              <pointLight position={[10, 10, 10]} intensity={1} />
-              <pointLight position={[-10, -10, -10]} intensity={0.5} />
-
-              {/* Escolha do modelo */}
-              {selectedModel === "model1" ? (
-                <BlenderModel key="A1" path="/A1.glb" />
-              ) : (
-                <BlenderModel key="A2" path="/A2.glb" />
-              )}
-
-              <OrbitControls 
-              ref={controlsRef} 
-              enableZoom
-              minDistance={5}
-              maxDistance={250} 
-              
-              />
-            </Canvas>
-          ) : (
-            <video
-              ref={videoRef}
-              autoPlay
-              muted
-              playsInline
-              className="h-full w-full object-cover"
-            />
-          )}
-        </div>
-
-        {/* Botões de controle */}
-        <div className="flex gap-2">
-          <Button
-            variant={mode === "3d" ? "default" : "outline"}
-            onClick={() => setMode("3d")}
-          >
-            <Move3D className="w-4 h-4 mr-2" />
-            Free View
-          </Button>
-
-          <Button variant="outline" onClick={resetCamera}>
-            <Square className="w-4 h-4 mr-2" />
-            Front View
-          </Button>
-
-          <Button
-            variant={mode === "live" ? "default" : "outline"}
-            onClick={() => setMode("live")}
-          >
-            <Video className="w-4 h-4 mr-2" />
-            Live
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+      <div className="h-[420px] w-full rounded-lg overflow-hidden bg-zinc-50 dark:bg-zinc-900">
+        <Canvas
+          frameloop="always"
+          camera={{ position: [3, 2, 5], fov: 40, near: 0.1, far: 200 }}
+          gl={{ preserveDrawingBuffer: true }}
+        >
+          <ambientLight intensity={0.7} />
+          <directionalLight position={[3, 3, 3]} intensity={1} />
+          <Suspense fallback={null}>
+            <GLBActuator which={modelIndex} facets={facets} />
+          </Suspense>
+          <OrbitControls enableZoom minDistance={1.2} maxDistance={600} />
+        </Canvas>
+      </div>
+    </div>
   );
-};
-
-export default ThreeDModel;
+}

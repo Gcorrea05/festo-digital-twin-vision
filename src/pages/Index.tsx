@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useLocation } from 'react-router-dom';
@@ -8,6 +7,9 @@ import Sidebar from '@/components/Sidebar';
 import LiveMetrics from '@/components/dashboard/LiveMetrics';
 //import AIClassification from '@/components/dashboard/AIClassification';
 import ThreeDModel from '@/components/dashboard/ThreeDModel';
+
+import { LiveProvider } from '@/context/LiveContext';
+import { ActuatorSelectionProvider } from '@/context/ActuatorSelectionContext';
 
 const Index = () => {
   const { isAuthenticated, isLoading } = useAuth();
@@ -45,31 +47,36 @@ const Index = () => {
       <div className="flex flex-1 overflow-hidden">
         <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-        <main className="flex-1 overflow-y-auto p-4 md:p-6 md:ml-64">
-          <div className="container mx-auto">
-            <div className="mb-6 flex justify-between items-center">
-              <div>
-                <h1 className="text-2xl font-bold mb-2">Dashboard</h1>
-                <p className="text-muted-foreground">Welcome to the FESTO Digital Twin monitoring system</p>
-              </div>
-            </div>
+        {/* Providers adicionados sem alterar layout/markup interno */}
+        <LiveProvider>
+          <ActuatorSelectionProvider>
+            <main className="flex-1 overflow-y-auto p-4 md:p-6 md:ml-64">
+              <div className="container mx-auto">
+                <div className="mb-6 flex justify-between items-center">
+                  <div>
+                    <h1 className="text-2xl font-bold mb-2">Dashboard</h1>
+                    <p className="text-muted-foreground">Welcome to the FESTO Digital Twin monitoring system</p>
+                  </div>
+                </div>
 
-            <div className="grid grid-cols-12 gap-6">
-              {/* Top row: LiveMetrics + AIClassification */}
-              <div className="col-span-12 md:col-span-6">
-                <LiveMetrics />
-              </div>
-              {/* <div className="col-span-12 md:col-span-6">
-                <AIClassification />
-              </div> */}
+                <div className="grid grid-cols-12 gap-6">
+                  {/* Top row: LiveMetrics + AIClassification */}
+                  <div className="col-span-12 md:col-span-6">
+                    <LiveMetrics />
+                  </div>
+                  {/* <div className="col-span-12 md:col-span-6">
+                    <AIClassification />
+                  </div> */}
 
-              {/* 3D Model Visualization */}
-              <div className="col-span-12">
-                <ThreeDModel />
+                  {/* 3D Model Visualization */}
+                  <div className="col-span-12">
+                    <ThreeDModel />
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
-        </main>
+            </main>
+          </ActuatorSelectionProvider>
+        </LiveProvider>
       </div>
     </div>
   );

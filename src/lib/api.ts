@@ -1,93 +1,129 @@
 // src/lib/api.ts
-// ---------------------------------------------
-// Base da API
-const raw = (import.meta.env.VITE_API_BASE ?? "").trim();
-export const API_BASE =
-  /^https?:\/\//i.test(raw) && raw
-    ? raw.replace(/\/+$/, "")
-    : `http://${window.location.hostname}:8000`;
+// Funções REST de fallback para quando o WS não estiver disponível.
+// Todas usam o mesmo API_BASE definido em VITE_API_BASE ou fallback localhost.
 
-console.log("API_BASE =", API_BASE);
+export type OPCFacet =
+  | "S1"
+  | "S2"
+  | "V_AVANCO"
+  | "V_RECUO"
+  | "INICIA"
+  | "PARA";
 
-// ---------------------------------------------
-// Função auxiliar para GET JSON
-async function jget<T = any>(url: string): Promise<T> {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-  return r.json();
+export type ActuatorState = {
+  id: number;
+  fsm: { state: string; error_code?: string | number };
+  facets: Record<OPCFacet, 0 | 1>;
+  cpm: number;
+  rms: number;
+  ts: string;
+};
+
+export type MPUData = {
+  id: string;
+  ax: number;
+  ay: number;
+  az: number;
+  gx: number;
+  gy: number;
+  gz: number;
+  temp_c: number;
+  ts: string;
+};
+
+function getApiBase(): string {
+  const env = import.meta.env?.VITE_API_BASE as string | undefined;
+  if (env && /^https?:\/\//i.test(env)) return env.replace(/\/+$/, "");
+  return `${window.location.protocol}//${window.location.hostname}:8000`;
 }
 
-// ---------------------------------------------
-// Endpoints de histórico OPC e MPU
-export function getOPCHistory(
-  name: string,
-  since: string = "-1d",        // -60s, -15m, -1h, -1d, ou ISO8601
-  limit: number = 20000
-) {
-  const params = new URLSearchParams({
-    name,
-    since,
-    asc: "true",
-    limit: String(limit),
-  });
-  return jget<{ items: any[] }>(`${API_BASE}/opc/history?${params.toString()}`);
+async function fetchJson<T>(path: string, opts: RequestInit = {}): Promise<T> {
+  const url = `${getApiBase()}${path}`;
+  const res = await fetch(url, opts);
+  if (!res.ok) {
+    throw new Error(`API ${res.status} ${res.statusText} on ${url}`);
+  }
+  return (await res.json()) as T;
 }
 
-export function getMPUHistory(
-  id: "MPUA1" | "MPUA2" = "MPUA1",
-  limit: number = 20000
-) {
-  const params = new URLSearchParams({
-    id,
-    asc: "true",
-    limit: String(limit),
-  });
-  return jget<{ items: any[] }>(`${API_BASE}/mpu/history?${params.toString()}`);
+// --- Health & System ---
+
+export async function getHealth(): Promise<any> {
+  return fetchJson("/api/health");
 }
 
-// ---------------------------------------------
-// Helpers matemáticos
-export function rms(values: number[]) {
-  if (!values.length) return 0;
-  const mean = values.reduce((a, b) => a + b, 0) / values.length;
-  const mse = values.reduce((a, b) => a + (b - mean) * (b - mean), 0) / values.length;
-  return Math.sqrt(mse);
+export async function getSystem(): Promise<any> {
+  return fetchJson("/api/system");
 }
 
-export function stateOf(
-  recuado: number,
-  avancado: number
-): "aberto" | "fechado" | "erro" | "indef" {
-  if (recuado === 1 && avancado === 0) return "fechado";
-  if (avancado === 1 && recuado === 0) return "aberto";
-  if (avancado === 1 && recuado === 1) return "erro";
-  return "indef";
+// --- Actuators ---
+
+export async function getActuatorStatus(id: number): Promise<ActuatorState> {
+  return fetchJson(`/api/actuators/${id}/status`);
 }
 
-export function computeCPM(
-  inicia: { ts_utc: string; value_bool: any }[],
-  para: { ts_utc: string; value_bool: any }[]
-) {
-  if (!inicia.length || !para.length) return 0;
-  const rises = (arr: any[]) => {
-    const out: number[] = [];
-    let prev = 0;
-    for (const s of arr) {
-      const v = Number(!!s.value_bool);
-      if (v === 1 && prev === 0) out.push(Date.parse(s.ts_utc));
-      prev = v;
-    }
-    return out;
-  };
-  const rI = rises(inicia);
-  const rP = rises(para);
-  const pairs = Math.min(rI.length, rP.length);
-  if (pairs === 0) return 0;
+export async function getActuatorCPM(
+  id: number,
+  window_s: number = 60
+): Promise<{ cpm: number }> {
+  return fetchJson(`/api/actuators/${id}/cpm?window_s=${window_s}`);
+}
 
-  const firstTs = Math.min(rI[0] ?? Infinity, rP[0] ?? Infinity);
-  const lastTs = Math.max(rI.at(-1) ?? -Infinity, rP.at(-1) ?? -Infinity);
-  const spanSec = Math.max(1, (lastTs - firstTs) / 1000);
+// --- OPC ---
 
-  const cycles = pairs;
-  return (cycles * 60) / spanSec; // ciclos por minuto
+export async function getOPCLatest(
+  actuatorId: number,
+  facets: OPCFacet[] = ["S1", "S2", "V_AVANCO", "V_RECUO", "INICIA", "PARA"]
+): Promise<Record<OPCFacet, 0 | 1>> {
+  const q = encodeURIComponent(facets.join(","));
+  return fetchJson(
+    `/api/opc/latest?actuator_id=${actuatorId}&facets=${q}`
+  );
+}
+
+export async function getOPCHistory(opts: {
+  actuatorId: number;
+  facet: OPCFacet;
+  since: string;
+  limit?: number;
+  asc?: boolean;
+}): Promise<Array<{ ts: string; value: number }>> {
+  const { actuatorId, facet, since, limit = 1000, asc = false } = opts;
+  const params = new URLSearchParams();
+  params.set("actuator_id", actuatorId.toString());
+  params.set("facet", facet);
+  params.set("since", since);
+  if (limit) params.set("limit", limit.toString());
+  if (asc) params.set("asc", "true");
+  return fetchJson(`/api/opc/history?${params.toString()}`);
+}
+
+// --- MPU ---
+
+export async function getLatestMPU(
+  id: number
+): Promise<MPUData> {
+  return fetchJson(`/api/mpu/latest?mpu_id=${id}`);
+}
+
+export async function getMPUHistory(opts: {
+  mpuId: number;
+  since: string;
+  limit?: number;
+  asc?: boolean;
+}): Promise<Array<MPUData>> {
+  const { mpuId, since, limit = 1000, asc = false } = opts;
+  const params = new URLSearchParams();
+  params.set("mpu_id", mpuId.toString());
+  params.set("since", since);
+  if (limit) params.set("limit", limit.toString());
+  if (asc) params.set("asc", "true");
+  return fetchJson(`/api/mpu/history?${params.toString()}`);
+}
+
+export async function getMPURms(
+  mpuId: number,
+  window_s: number = 2
+): Promise<{ rms: number }> {
+  return fetchJson(`/api/mpu/rms?mpu_id=${mpuId}&window_s=${window_s}`);
 }
