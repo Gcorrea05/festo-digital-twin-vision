@@ -12,7 +12,6 @@ type Props = {
   value?: number | string | null;
   unit?: string;
   severity?: Severity;
-  // hint?: string; // removido da UI (sem subtitle)
   /**
    * Render prop para um gráfico pequenininho (sparkline).
    * Ex.: <MiniSparkline data={...} />
@@ -68,7 +67,7 @@ export default function KpiCard({
     ) : null;
 
   return (
-    <Card className="h-full">
+    <Card className="h-full w-full">
       <CardHeader className="pb-2">
         <div className="flex items-start justify-between gap-2">
           <CardTitle className="text-sm font-medium text-zinc-600 dark:text-zinc-300">
@@ -76,7 +75,6 @@ export default function KpiCard({
           </CardTitle>
           <span className={badgeClass(severity)}>{severity.toUpperCase()}</span>
         </div>
-        {/* Subtitle/hint removido da UI */}
       </CardHeader>
       <CardContent className="pt-0">
         <div className="flex items-end justify-between gap-4">

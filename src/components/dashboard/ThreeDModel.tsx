@@ -5,6 +5,12 @@ import { OrbitControls, useGLTF, Html } from "@react-three/drei";
 import * as THREE from "three";
 import { useActuatorSelection } from "@/context/ActuatorSelectionContext";
 import { useLive } from "@/context/LiveContext";
+import { Compass, Square, Video } from "lucide-react";
+
+/** ---------- KNOBS ---------- */
+const FIT_MULTIPLIER = 0.9; // >1 afasta, <1 aproxima (após auto-fit)
+const INITIAL_DIR = new THREE.Vector3(1.6, 1.2, 1.8).normalize(); // direção inicial da câmera
+const INITIAL_FOV = 40;
 
 /** Facets vindas do live */
 type Facets = { S1?: 0 | 1; S2?: 0 | 1 };
@@ -21,7 +27,7 @@ function getModelUrl(which: 1 | 2) {
 
 /** Hook que posiciona câmera/controles para enquadrar o objeto */
 function useAutoFit(targetRef: React.RefObject<THREE.Object3D | null>) {
-  const { camera, gl, controls } = useThree() as any; // controls vem do OrbitControls(makeDefault)
+  const { camera, gl, controls } = useThree() as any;
   const [sphere, setSphere] = useState<{ center: THREE.Vector3; radius: number } | null>(null);
   const [distances, setDistances] = useState({ min: 0.1, max: 100 });
 
@@ -36,19 +42,22 @@ function useAutoFit(targetRef: React.RefObject<THREE.Object3D | null>) {
     box.getSize(size);
     const radius = Math.max(size.x, size.y, size.z) * 0.5 || 1;
 
-    // distâncias proporcionais
+    // distâncias proporcionais p/ zoom
     const minDistance = Math.max(0.25, radius * 0.8);
     const maxDistance = Math.max(5, radius * 12);
 
     // near/far + posição inicial
     camera.near = Math.max(0.01, radius / 50);
     camera.far = radius * 100;
+    camera.fov = INITIAL_FOV;
     camera.updateProjectionMatrix();
 
-    const fov = (camera.fov ?? 40) * (Math.PI / 180);
+    const fov = (camera.fov ?? INITIAL_FOV) * (Math.PI / 180);
     const fitDist = radius / Math.sin(fov / 2);
-    const direction = new THREE.Vector3(1.6, 1.2, 1.8).normalize();
-    camera.position.copy(center.clone().add(direction.multiplyScalar(fitDist * 0.9)));
+
+    camera.position.copy(
+      center.clone().add(INITIAL_DIR.clone().multiplyScalar(fitDist * FIT_MULTIPLIER))
+    );
 
     if (controls) {
       controls.target.copy(center);
@@ -80,22 +89,21 @@ function GLBActuator({
   groupRef: React.RefObject<THREE.Group>;
 }) {
   const url = getModelUrl(which);
-
-  // Pré-carrega ambas as variações
   useGLTF.preload(getModelUrl(1));
   useGLTF.preload(getModelUrl(2));
-
   const { scene } = useGLTF(url, true);
 
   useEffect(() => {
     if (!scene) return;
     scene.traverse((o) => {
+      // @ts-ignore - alguns nós não tipam essas props
       o.castShadow = true;
+      // @ts-ignore
       o.receiveShadow = true;
     });
   }, [scene]);
 
-  // Exemplo simples: desloca levemente no eixo Z quando S2=1
+  // Exemplo: desloca levemente no Z quando S2=1
   useEffect(() => {
     const s2 = facets?.S2 ?? 0;
     if (groupRef.current) {
@@ -127,15 +135,17 @@ function AutoFit({
   return null;
 }
 
+/** --- Principal --- */
 export default function ThreeDModel() {
   const { snapshot } = useLive();
   const { setSelectedId } = useActuatorSelection();
 
+  // índice do modelo (só 1/2). Câmera é controlada por showCamera.
   const [modelIndex, setModelIndex] = useState<1 | 2>(1);
   const [viewMode, setViewMode] = useState<"free" | "front">("free");
-
-  // LIVE (câmera do usuário)
   const [showCamera, setShowCamera] = useState(false);
+
+  // Câmera
   const videoRef = useRef<HTMLVideoElement>(null);
   const camStreamRef = useRef<MediaStream | null>(null);
 
@@ -146,25 +156,21 @@ export default function ThreeDModel() {
     return list.find((a) => a.id === modelIndex)?.facets;
   }, [snapshot, modelIndex]);
 
-  // sanity-check de arquivo
+  // sanity-check de arquivo (só quando NÃO está em câmera)
   useEffect(() => {
+    if (showCamera) return;
     const url = getModelUrl(modelIndex);
-    fetch(url)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      })
-      .catch((e) => {
-        console.error(
-          `[3D] Falha ao carregar ${url}. Coloque A${modelIndex}.glb em /public (respeite maiúsculas/minúsculas).`,
-          e
-        );
-      });
-  }, [modelIndex]);
-
+    fetch(url).catch((e) =>
+      console.error(
+        `[3D] Falha ao carregar ${url}. Coloque A${modelIndex}.glb em /public (maiúsc/minúsc).`,
+        e
+      )
+    );
+  }, [showCamera, modelIndex]);
   const groupRef = useRef<THREE.Group>(null);
   const controlsRef = useRef<any>(null);
 
-  // Abre/fecha webcam
+  // Abrir/fechar webcam ao clicar no botão Live
   useEffect(() => {
     const open = async () => {
       try {
@@ -184,10 +190,8 @@ export default function ThreeDModel() {
       camStreamRef.current = null;
       if (videoRef.current) videoRef.current.srcObject = null;
     };
-
     if (showCamera) open();
     else close();
-
     return () => close();
   }, [showCamera]);
 
@@ -196,14 +200,12 @@ export default function ThreeDModel() {
     const controls = controlsRef.current;
     if (!controls) return;
     const camera = controls.object as THREE.PerspectiveCamera;
-
-    const fov = (camera.fov ?? 40) * (Math.PI / 180);
+    const fov = (camera.fov ?? INITIAL_FOV) * (Math.PI / 180);
     const fitDist = radius / Math.sin(fov / 2);
-
-    // Frente olhando no +Z (ajuste se seu modelo usar outro eixo)
-    camera.position.set(center.x, center.y, center.z + fitDist * 0.9);
+    // Frente no +Z (ajuste conforme seu eixo)
+    camera.position.set(center.x, center.y, center.z + fitDist * FIT_MULTIPLIER);
     controls.target.copy(center);
-    controls.enableRotate = false; // trava rotação na vista frontal
+    controls.enableRotate = false;
     controls.update();
   };
 
@@ -212,78 +214,92 @@ export default function ThreeDModel() {
     const controls = controlsRef.current;
     if (!controls) return;
     controls.enableRotate = true;
-    // libera ângulos caso tenha sido travado antes
     controls.minPolarAngle = 0;
     controls.maxPolarAngle = Math.PI;
     controls.update();
   };
 
+  /** Botão padrão (tamanho maior) */
+  const TabButton = ({
+    active,
+    onClick,
+    children,
+  }: {
+    active: boolean;
+    onClick: () => void;
+    children: React.ReactNode;
+  }) => (
+    <button
+      className={`px-5 py-2 rounded-md text-base font-medium ${
+        active ? "bg-primary text-white" : "bg-zinc-200 dark:bg-zinc-800"
+      }`}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+
   return (
     <div className="w-full rounded-xl border border-zinc-200 dark:border-zinc-800 p-3">
-      {/* Tabs Modelo 1/2 */}
-      <div className="mb-3 flex items-center gap-2">
-        <button
-          className={`px-3 py-1 rounded-md text-sm ${
-            modelIndex === 1 ? "bg-primary text-white" : "bg-zinc-200 dark:bg-zinc-800"
-          }`}
-          onClick={() => setModelIndex(1)}
-        >
+      {/* Tabs apenas dos modelos (sem aba de câmera) */}
+      <div className="mb-3 flex items-center gap-3">
+        <TabButton active={modelIndex === 1} onClick={() => setModelIndex(1)}>
           Modelo 1
-        </button>
-        <button
-          className={`px-3 py-1 rounded-md text-sm ${
-            modelIndex === 2 ? "bg-primary text-white" : "bg-zinc-200 dark:bg-zinc-800"
-          }`}
-          onClick={() => setModelIndex(2)}
-        >
+        </TabButton>
+        <TabButton active={modelIndex === 2} onClick={() => setModelIndex(2)}>
           Modelo 2
-        </button>
+        </TabButton>
       </div>
 
-      {/* Canvas */}
+      {/* Área principal: 3D OU CÂMERA no MESMO espaço */}
       <div className="h-[460px] w-full rounded-lg overflow-hidden bg-zinc-50 dark:bg-zinc-900">
-        <Canvas
-          key={modelIndex} // força remontagem ao trocar de modelo
-          camera={{ position: [3, 2, 5], fov: 40, near: 0.1, far: 200 }}
-          gl={{ preserveDrawingBuffer: true }}
-          shadows
-          onCreated={({ gl }) => gl.setClearColor(new THREE.Color("#0b0f1a"))}
-        >
-          {/* Luzes */}
-          <ambientLight intensity={0.7} />
-          <directionalLight position={[3, 3, 3]} intensity={1} castShadow />
-
-          {/* Controles de órbita */}
-          <OrbitControls ref={controlsRef} makeDefault enableZoom enablePan />
-
-          {/* Conteúdo 3D */}
-          <Suspense
-            fallback={
-              <Html center style={{ fontSize: 14, opacity: 0.8 }}>
-                Carregando modelo…
-              </Html>
-            }
+        {showCamera ? (
+          <video ref={videoRef} autoPlay playsInline className="h-full w-full object-cover" muted />
+        ) : (
+          <Canvas
+            key={modelIndex}
+            camera={{ position: [3, 2, 5], fov: INITIAL_FOV, near: 0.1, far: 200 }}
+            gl={{ preserveDrawingBuffer: true }}
+            shadows
+            onCreated={({ gl }) => gl.setClearColor(new THREE.Color("#0b0f1a"))}
           >
-            <group ref={groupRef}>
-              <GLBActuator which={modelIndex} facets={facets} groupRef={groupRef} />
-            </group>
-          </Suspense>
+            {/* Luzes */}
+            <ambientLight intensity={0.7} />
+            <directionalLight position={[3, 3, 3]} intensity={1} castShadow />
 
-          {/* Auto-fit e re-aplicação da vista */}
-          <AutoFit
-            groupRef={groupRef}
-            onFit={(center, radius) => {
-              if (viewMode === "front") applyFrontView(center, radius);
-              else applyFreeView();
-            }}
-          />
-        </Canvas>
+            {/* Controles de órbita */}
+            <OrbitControls ref={controlsRef} makeDefault enableZoom enablePan />
+
+            {/* Conteúdo 3D */}
+            <Suspense
+              fallback={
+                <Html center style={{ fontSize: 14, opacity: 0.8 }}>
+                  Carregando modelo…
+                </Html>
+              }
+            >
+              <group ref={groupRef}>
+                <GLBActuator which={modelIndex} facets={facets} groupRef={groupRef} />
+              </group>
+            </Suspense>
+
+            {/* Auto-fit e re-aplicação da vista */}
+            <AutoFit
+              groupRef={groupRef}
+              onFit={(center, radius) => {
+                if (viewMode === "front") applyFrontView(center, radius);
+                else applyFreeView();
+              }}
+            />
+          </Canvas>
+        )}
       </div>
 
-      {/* Toolbar embaixo do 3D (mesmo “vibe” do design) */}
-      <div className="mt-3 flex flex-wrap items-center gap-2">
+      {/* Toolbar embaixo (com botões maiores) */}
+      <div className="mt-4 flex items-center gap-3">
+        {/* Free View */}
         <button
-          className={`px-3 py-1 rounded-md text-xs border ${
+          className={`inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium border ${
             viewMode === "free" ? "bg-zinc-200 dark:bg-zinc-800" : "bg-transparent"
           }`}
           onClick={() => {
@@ -292,16 +308,17 @@ export default function ThreeDModel() {
           }}
           title="Orbit livre"
         >
-          🧭 Free View
+          <Compass className="w-4 h-4 opacity-70" />
+          Free View
         </button>
 
+        {/* Front View */}
         <button
-          className={`px-3 py-1 rounded-md text-xs border ${
+          className={`inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium border ${
             viewMode === "front" ? "bg-zinc-200 dark:bg-zinc-800" : "bg-transparent"
           }`}
           onClick={() => {
             setViewMode("front");
-            // aplica imediatamente usando bounding atual
             const box = new THREE.Box3().setFromObject(groupRef.current ?? new THREE.Group());
             const center = new THREE.Vector3();
             const size = new THREE.Vector3();
@@ -312,33 +329,25 @@ export default function ThreeDModel() {
           }}
           title="Vista frontal"
         >
-          ☐ Front View
+          <Square className="w-4 h-4 opacity-70" />
+          Front View
         </button>
 
-        <span className="mx-1 opacity-40 select-none">•</span>
+        {/* separador visual */}
+        <span className="mx-2 opacity-40 select-none">•</span>
 
+        {/* Live (abre/fecha câmera no mesmo espaço) */}
         <button
-          className={`px-3 py-1 rounded-md text-xs border ${
+          className={`inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium border ${
             showCamera ? "bg-emerald-600 text-white border-emerald-600" : "bg-transparent"
           }`}
           onClick={() => setShowCamera((v) => !v)}
           title="Abrir câmera do usuário"
         >
+          <Video className="w-4 h-4 opacity-70" />
           {showCamera ? "Fechar Live" : "Live"}
         </button>
       </div>
-
-      {/* Área da câmera (aparece só quando Live está ativo) */}
-      {showCamera && (
-        <div className="mt-3">
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            className="w-full rounded-md border"
-          />
-        </div>
-      )}
     </div>
   );
 }
