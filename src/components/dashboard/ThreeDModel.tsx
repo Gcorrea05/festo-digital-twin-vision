@@ -1,4 +1,3 @@
-// src/components/dashboard/ThreeDModel.tsx
 import React, { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls, useGLTF, Html } from "@react-three/drei";
@@ -96,7 +95,7 @@ function GLBActuator({
   useEffect(() => {
     if (!scene) return;
     scene.traverse((o) => {
-      // @ts-ignore - alguns nós não tipam essas props
+      // @ts-ignore
       o.castShadow = true;
       // @ts-ignore
       o.receiveShadow = true;
@@ -167,6 +166,7 @@ export default function ThreeDModel() {
       )
     );
   }, [showCamera, modelIndex]);
+
   const groupRef = useRef<THREE.Group>(null);
   const controlsRef = useRef<any>(null);
 
@@ -202,7 +202,6 @@ export default function ThreeDModel() {
     const camera = controls.object as THREE.PerspectiveCamera;
     const fov = (camera.fov ?? INITIAL_FOV) * (Math.PI / 180);
     const fitDist = radius / Math.sin(fov / 2);
-    // Frente no +Z (ajuste conforme seu eixo)
     camera.position.set(center.x, center.y, center.z + fitDist * FIT_MULTIPLIER);
     controls.target.copy(center);
     controls.enableRotate = false;
@@ -252,7 +251,14 @@ export default function ThreeDModel() {
       </div>
 
       {/* Área principal: 3D OU CÂMERA no MESMO espaço */}
-      <div className="h-[460px] w-full rounded-lg overflow-hidden bg-zinc-50 dark:bg-zinc-900">
+      <div
+        className="
+          relative w-full overflow-hidden rounded-lg
+          bg-zinc-50 dark:bg-zinc-900
+          aspect-[16/9] md:aspect-[21/9] min-h-64
+          max-h-[calc(100vh-var(--header-h)-220px)]
+        "
+      >
         {showCamera ? (
           <video ref={videoRef} autoPlay playsInline className="h-full w-full object-cover" muted />
         ) : (
@@ -260,8 +266,10 @@ export default function ThreeDModel() {
             key={modelIndex}
             camera={{ position: [3, 2, 5], fov: INITIAL_FOV, near: 0.1, far: 200 }}
             gl={{ preserveDrawingBuffer: true }}
-            shadows
+            dpr={[1, 2]}
+            style={{ height: "100%", width: "100%" }}
             onCreated={({ gl }) => gl.setClearColor(new THREE.Color("#0b0f1a"))}
+            shadows
           >
             {/* Luzes */}
             <ambientLight intensity={0.7} />

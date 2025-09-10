@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { BellIcon, Menu, GaugeCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -31,26 +30,36 @@ const Header: React.FC<HeaderProps> = ({ toggleSidebar }) => {
   };
 
   return (
-    <header className="bg-white dark:bg-slate-900 border-b border-gray-200 dark:border-slate-800 sticky top-0 z-40">
-      <div className="container mx-auto px-4 h-16 flex items-center justify-between">
-        <div className="flex items-center">
-          <Button variant="ghost" size="icon" className="mr-2 md:hidden" onClick={toggleSidebar}>
+    <header className="fixed inset-x-0 top-0 z-50 border-b border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+      {/* altura real 64px */}
+      <div className="h-16 w-full px-4 flex items-center justify-between">
+        <div className="flex items-center min-w-0">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="mr-2 lg:hidden"
+            onClick={toggleSidebar}
+            aria-label="Open sidebar"
+          >
             <Menu className="h-5 w-5" />
           </Button>
-          <div className="flex items-center">
+
+          <div className="flex items-center shrink-0">
             <GaugeCircle className="h-6 w-6 text-festo-blue mr-2" />
-            <h1 className="font-bold text-xl text-slate-800 dark:text-slate-100">FESTO Digital Twin</h1>
+            <h1 className="font-bold text-xl text-slate-800 dark:text-slate-100 whitespace-nowrap">
+              IoTech Digitwin
+            </h1>
           </div>
         </div>
 
-        <div className="flex items-center space-x-4">
+        <div className="flex items-center gap-3">
           <DarkModeToggle />
-          
+
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="icon" className="relative">
+              <Button variant="outline" size="icon" className="relative" aria-label="Open notifications">
                 <BellIcon className="h-5 w-5" />
-                <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-red-500"></span>
+                <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-red-500" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-80">
@@ -80,7 +89,7 @@ const Header: React.FC<HeaderProps> = ({ toggleSidebar }) => {
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" className="relative p-0 h-8 w-8 rounded-full">
+              <Button variant="ghost" className="relative p-0 h-8 w-8 rounded-full" aria-label="Open profile menu">
                 <Avatar className="h-8 w-8">
                   <AvatarImage src={user?.avatar || ''} alt={user?.name || 'User'} />
                   <AvatarFallback className="bg-primary text-primary-foreground">

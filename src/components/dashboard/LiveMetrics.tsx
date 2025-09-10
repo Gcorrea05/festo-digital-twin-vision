@@ -50,7 +50,10 @@ export default function LiveMetrics() {
   const { snapshot } = useLive();
   const { selectedId } = useActuatorSelection();
 
-  const act = snapshot?.actuators?.find((a) => a?.id === selectedId) ?? snapshot?.actuators?.[selectedId - 1];
+  const act =
+    snapshot?.actuators?.find((a) => a?.id === selectedId) ??
+    snapshot?.actuators?.[Math.max(0, (selectedId ?? 1) - 1)];
+
   const st = statusFromFacets(act?.facets);
   const cpm = act?.cpm ?? null;
 
@@ -63,7 +66,9 @@ export default function LiveMetrics() {
 
   useEffect(() => {
     let cancelled = false;
-    async function loadFirstInicia() {
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    (async () => {
       try {
         const hist = await getOPCHistory({
           actuatorId: selectedId,
@@ -73,53 +78,61 @@ export default function LiveMetrics() {
           asc: true,
         });
         if (cancelled) return;
+
         const first = hist?.[0];
         if (!first) {
           setUptimeMs(null);
           return;
         }
         const t0 = new Date(first.ts).getTime();
+
         const tick = () => {
-          if (cancelled) return;
-          setUptimeMs(Date.now() - t0);
+          if (!cancelled) setUptimeMs(Date.now() - t0);
         };
+
         tick();
-        const id = setInterval(tick, 1000);
-        return () => clearInterval(id);
+        intervalId = setInterval(tick, 1000);
       } catch {
         if (!cancelled) setUptimeMs(null);
       }
-    }
-    loadFirstInicia();
+    })();
+
     return () => {
       cancelled = true;
+      if (intervalId) clearInterval(intervalId);
     };
   }, [selectedId]);
 
   return (
-  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-    <KpiCard
-      title={`ESTADO ATUAL (A${selectedId})`}
-      value={st.label}
-      severity={st.sev}
-    />
-    <KpiCard
-      title="STATUS DO SISTEMA"
-      value={String(systemMode)}
-      severity={systemSev}
-    />
-    <KpiCard
-      title="CPM"
-      value={cpm ?? "—"}
-      unit="ciclos/min"
-      severity={cpm == null ? "gray" : "green"}
-      decimals={0}
-    />
-    <KpiCard
-      title="TEMPO DE ATIVIDADE"
-      value={uptimeMs == null ? "—" : formatDurationMs(uptimeMs)}
-      severity={uptimeMs == null ? "gray" : "green"}
-    />
-  </div>
-);
+    <div
+      className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(180px,1fr))]"
+      aria-label="Live KPI cards"
+    >
+      <KpiCard
+        title={`ESTADO ATUAL (A${selectedId})`}
+        value={st.label}
+        severity={st.sev}
+      />
+
+      <KpiCard
+        title="STATUS DO SISTEMA"
+        value={String(systemMode)}
+        severity={systemSev as any}
+      />
+
+      <KpiCard
+        title="CPM"
+        value={cpm ?? "—"}
+        unit="ciclos/min"
+        severity={cpm == null ? ("gray" as const) : ("green" as const)}
+        decimals={0}
+      />
+
+      <KpiCard
+        title="TEMPO DE ATIVIDADE"
+        value={uptimeMs == null ? "—" : formatDurationMs(uptimeMs)}
+        severity={uptimeMs == null ? ("gray" as const) : ("green" as const)}
+      />
+    </div>
+  );
 }

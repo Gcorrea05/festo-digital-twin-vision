@@ -1,5 +1,5 @@
 import React from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { Gauge, AlertCircle, BarChart2, Camera, ChevronLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/context/AuthContext';
@@ -21,96 +21,74 @@ interface NavItem {
 
 const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
   const { hasPermission } = useAuth();
-  const currentPath = window.location.pathname;
-  
+  const { pathname } = useLocation();
+
   const navItems: NavItem[] = [
-    { 
-      name: 'Dashboard', 
-      href: '/', 
-      icon: Gauge,
-      active: currentPath === '/'
-    },
-    { 
-      name: 'Monitoring', 
-      href: '/monitoring', 
-      icon: Camera,
-      active: currentPath === '/monitoring'
-    },
-    { 
-      name: 'Analytics', 
-      href: '/analytics', 
-      icon: BarChart2,
-      active: currentPath === '/analytics'
-    },
-    { 
-      name: 'Alerts', 
-      href: '/alerts', 
-      icon: AlertCircle,
-      active: currentPath === '/alerts'
-    }
+    { name: 'Dashboard', href: '/', icon: Gauge, active: pathname === '/' },
+    { name: 'Monitoring', href: '/monitoring', icon: Camera, active: pathname === '/monitoring' },
+    { name: 'Analytics', href: '/analytics', icon: BarChart2, active: pathname === '/analytics' },
+    { name: 'Alerts', href: '/alerts', icon: AlertCircle, active: pathname === '/alerts' },
   ];
 
   return (
-    <aside 
-      className={cn(
-        'fixed top-0 left-0 z-50 h-full w-64 bg-sidebar text-sidebar-foreground flex flex-col transition-transform transform duration-300 ease-in-out',
-        isOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+    <>
+      {isOpen && (
+        <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px] lg:hidden" onClick={onClose} />
       )}
-    >
-      <div className="flex items-center justify-between p-4">
-        <h2 className="text-lg font-bold">FESTO Control</h2>
-        <Button 
-          variant="ghost" 
-          size="icon" 
-          className="md:hidden text-sidebar-foreground hover:bg-sidebar-accent" 
-          onClick={onClose}
-        >
-          <ChevronLeft className="h-5 w-5" />
-        </Button>
-      </div>
-      
-      <Separator className="bg-sidebar-border" />
-      
-      <nav className="flex-1 overflow-y-auto py-4">
-        <ul className="space-y-1 px-2">
-          {navItems.map((item) => {
-            // Skip items the user doesn't have permission for
-            if (item.requiredRole && !hasPermission(item.requiredRole)) {
-              return null;
-            }
-            
-            return (
-              <li key={item.name}>
-                <Link to={item.href}>
-                  <Button
-                    variant="ghost"
-                    className={cn(
-                      'w-full justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-                      item.active ? 'bg-sidebar-accent text-sidebar-accent-foreground' : ''
-                    )}
-                  >
-                    <item.icon className="mr-2 h-5 w-5" />
-                    {item.name}
-                  </Button>
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
-      </nav>
-      
-      <div className="p-4 text-xs text-sidebar-foreground/70">
-        <div className="flex items-center space-x-2 mb-1">
-          <div className="status-indicator-active">
-            <span></span>
-            <span></span>
+
+      <aside
+        className={cn(
+          // FIXO e alinhado sob o header fixo de 64px (h-16)
+          'fixed left-0 top-16 z-40 w-64 h-[calc(100vh-64px)]',
+          'flex flex-col min-h-0',
+          'bg-sidebar/90 dark:bg-sidebar/85 backdrop-blur-md',
+          'text-sidebar-foreground border-r border-sidebar-border',
+          'transform transition-transform duration-300 ease-in-out',
+          isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
+        )}
+        aria-label="Primary"
+      >
+        <div className="px-4 pt-4 pb-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-bold">IoTech Digitwin</h2>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="lg:hidden text-sidebar-foreground hover:bg-sidebar-accent"
+              onClick={onClose}
+              aria-label="Close sidebar"
+            >
+              <ChevronLeft className="h-5 w-5" />
+            </Button>
           </div>
-          <span>System Online</span>
+          <Separator className="mt-3 bg-sidebar-border" />
         </div>
-        <p>FESTO Digital Twin v1.0.0</p>
-        <p>© 2025 FESTO Corporation</p>
-      </div>
-    </aside>
+
+        <nav className="flex-1 min-h-0 overflow-y-auto px-2 py-2">
+          <ul className="space-y-1">
+            {navItems.map((item) => {
+              if (item.requiredRole && !hasPermission(item.requiredRole)) return null;
+              return (
+                <li key={item.name}>
+                  <Link to={item.href} onClick={onClose}>
+                    <Button
+                      variant="ghost"
+                      className={cn(
+                        'w-full justify-start text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+                        item.active && 'bg-sidebar-accent text-sidebar-accent-foreground'
+                      )}
+                    >
+                      <item.icon className="mr-2 h-5 w-5" />
+                      <span className="truncate">{item.name}</span>
+                    </Button>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </nav>
+      </aside>
+    </>
   );
 };
 
