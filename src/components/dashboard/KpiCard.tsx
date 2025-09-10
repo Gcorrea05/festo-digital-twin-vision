@@ -1,3 +1,4 @@
+// src/components/dashboard/KpiCard.tsx
 // Card de KPI com semáforo e mini-trend embutível
 // - Usa shadcn/ui Card
 // - Exibe título, valor + unidade, badge de severidade e área para sparkline
@@ -25,6 +26,10 @@ type Props = {
    * Decimais quando value é numérico.
    */
   decimals?: number;
+  /**
+   * Classes extras para controle de layout responsivo no pai (grid/flex).
+   */
+  className?: string;
 };
 
 function badgeClass(sev: Severity = "gray") {
@@ -59,6 +64,7 @@ export default function KpiCard({
   trend,
   loading = false,
   decimals = 2,
+  className = "",
 }: Props) {
   const display = loading ? "…" : formatValue(value, decimals);
   const withUnit =
@@ -67,25 +73,31 @@ export default function KpiCard({
     ) : null;
 
   return (
-    <Card className="h-full w-full">
+    <Card
+      className={`h-full w-full min-h-[88px] sm:min-h-[100px] min-w-[240px] ${className}`}
+    >
+
       <CardHeader className="pb-2">
-        <div className="flex items-start justify-between gap-2">
-          <CardTitle className="text-sm font-medium text-zinc-600 dark:text-zinc-300">
+        <div className="flex items-start justify-between gap-2 flex-nowrap">
+          <CardTitle className="text-sm font-medium text-zinc-600 dark:text-zinc-300 whitespace-nowrap">
             {title}
           </CardTitle>
           <span className={badgeClass(severity)}>{severity.toUpperCase()}</span>
         </div>
       </CardHeader>
+
       <CardContent className="pt-0">
         <div className="flex items-end justify-between gap-4">
-          <div className="flex-1">
-            <div className="text-xl font-semibold tracking-tight">
+          <div className="flex-1 min-w-0">
+            <div className="text-lg sm:text-xl md:text-2xl font-semibold tracking-tight">
               {display}
               {withUnit}
             </div>
           </div>
           {trend ? (
-            <div className="w-28 h-12 flex items-center justify-end">{trend}</div>
+            <div className="w-20 sm:w-28 h-10 sm:h-12 flex items-center justify-end shrink-0">
+              {trend}
+            </div>
           ) : null}
         </div>
       </CardContent>

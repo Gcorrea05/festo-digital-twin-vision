@@ -1,7 +1,6 @@
-
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Gauge, Settings, AlertCircle, BarChart2, Camera, ChevronLeft } from 'lucide-react';
+import { Gauge, AlertCircle, BarChart2, Camera, ChevronLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/context/AuthContext';
 import { cn } from '@/lib/utils';
@@ -30,13 +29,6 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
       href: '/', 
       icon: Gauge,
       active: currentPath === '/'
-    },
-    { 
-      name: 'Controls', 
-      href: '/controls', 
-      icon: Settings,
-      requiredRole: 'operator',
-      active: currentPath === '/controls'
     },
     { 
       name: 'Monitoring', 

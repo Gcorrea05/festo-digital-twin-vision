@@ -97,33 +97,29 @@ export default function LiveMetrics() {
   }, [selectedId]);
 
   return (
-    <div className="grid gap-6 md:grid-cols-4">
-      <KpiCard
-        title={`ESTADO ATUAL (A${selectedId})`}
-        value={st.label}
-        severity={st.sev as any}
-        hint="Derivado de S1/S2"
-      />
-      <KpiCard
-        title="STATUS DO SISTEMA"
-        value={String(systemMode)}
-        severity={systemSev as any}
-        hint="LIVE / DEMO / DESLIGADO (do backend)"
-      />
-      <KpiCard
-        title="CPM"
-        value={cpm ?? "—"}
-        unit="ciclos/min"
-        severity={cpm == null ? ("gray" as any) : ("green" as any)}
-        hint={`Ciclos por minuto do atuador A${selectedId}`}
-        decimals={0}
-      />
-      <KpiCard
-        title="TEMPO DE ATIVIDADE"
-        value={uptimeMs == null ? "—" : formatDurationMs(uptimeMs)}
-        severity={uptimeMs == null ? ("gray" as any) : ("green" as any)}
-        hint="Desde o primeiro INICIA nas últimas 12h"
-      />
-    </div>
-  );
+  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+    <KpiCard
+      title={`ESTADO ATUAL (A${selectedId})`}
+      value={st.label}
+      severity={st.sev}
+    />
+    <KpiCard
+      title="STATUS DO SISTEMA"
+      value={String(systemMode)}
+      severity={systemSev}
+    />
+    <KpiCard
+      title="CPM"
+      value={cpm ?? "—"}
+      unit="ciclos/min"
+      severity={cpm == null ? "gray" : "green"}
+      decimals={0}
+    />
+    <KpiCard
+      title="TEMPO DE ATIVIDADE"
+      value={uptimeMs == null ? "—" : formatDurationMs(uptimeMs)}
+      severity={uptimeMs == null ? "gray" : "green"}
+    />
+  </div>
+);
 }
