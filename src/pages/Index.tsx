@@ -4,7 +4,7 @@ import { useLocation } from 'react-router-dom';
 import Login from '@/components/Login';
 import Header from '@/components/Header';
 import Sidebar from '@/components/Sidebar';
-import LiveMetrics from '@/components/dashboard/LiveMetrics';
+import LiveMetrics  from '@/components/dashboard/LiveMetrics';
 // import AIClassification from '@/components/dashboard/AIClassification';
 import ThreeDModel from '@/components/dashboard/ThreeDModel';
 

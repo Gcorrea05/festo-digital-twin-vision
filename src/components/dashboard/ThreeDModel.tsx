@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { useActuatorSelection } from "@/context/ActuatorSelectionContext";
 import { useLive } from "@/context/LiveContext";
 import { Compass, Square, Video } from "lucide-react";
+import { useOpcStream } from "@/hooks/useOpcStream";
 
 /** ---------- KNOBS ---------- */
 const FIT_MULTIPLIER = 0.9; // >1 afasta, <1 aproxima (após auto-fit)
@@ -76,7 +77,6 @@ function useAutoFit(targetRef: React.RefObject<THREE.Object3D | null>) {
 
   return { sphere, distances };
 }
-
 /** Modelo GLB com pequeno hook de animação opcional */
 function GLBActuator({
   which,
@@ -102,13 +102,22 @@ function GLBActuator({
     });
   }, [scene]);
 
-  // Exemplo: desloca levemente no Z quando S2=1
+  // Anima suavemente o deslocamento no Z quando S2=1 (avançado)
   useEffect(() => {
     const s2 = facets?.S2 ?? 0;
-    if (groupRef.current) {
-      const z = THREE.MathUtils.lerp(groupRef.current.position.z, s2 ? 0.25 : 0, 0.5);
-      groupRef.current.position.z = z;
-    }
+    if (!groupRef.current) return;
+    const targetZ = s2 ? 0.25 : 0;
+    let raf = 0;
+    const start = groupRef.current.position.z;
+    const dur = 180; // ms
+    const t0 = performance.now();
+    const tick = () => {
+      const t = Math.min(1, (performance.now() - t0) / dur);
+      groupRef.current!.position.z = THREE.MathUtils.lerp(start, targetZ, t);
+      if (t < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
   }, [facets?.S2, groupRef]);
 
   return <primitive object={scene} dispose={null} />;
@@ -144,17 +153,46 @@ export default function ThreeDModel() {
   const [viewMode, setViewMode] = useState<"free" | "front">("free");
   const [showCamera, setShowCamera] = useState(false);
 
+  // WS: assina ambos sinais do atuador atual (S1/S2) para atualização instantânea
+  const s1Name = `Recuado_${modelIndex}S1`;
+  const s2Name = `Avancado_${modelIndex}S2`;
+  const { last: lastS1 } = useOpcStream({ name: s1Name });
+  const { last: lastS2 } = useOpcStream({ name: s2Name });
+
   // Câmera
   const videoRef = useRef<HTMLVideoElement>(null);
   const camStreamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => setSelectedId(modelIndex), [modelIndex, setSelectedId]);
 
-  const facets = useMemo(() => {
+  // Facets do snapshot + override em tempo real via WS
+  const facetsFromSnapshot = useMemo(() => {
     const list = (snapshot?.actuators ?? []) as ActuatorSnapshot[];
-    return list.find((a) => a.id === modelIndex)?.facets;
+    return list.find((a) => a.id === modelIndex)?.facets ?? {};
   }, [snapshot, modelIndex]);
 
+  const [facetsWs, setFacetsWs] = useState<Facets>({});
+  useEffect(() => setFacetsWs({}), [modelIndex]); // limpa ao trocar modelo
+
+  useEffect(() => {
+    if (lastS1?.name === s1Name && typeof lastS1.value_bool === "boolean") {
+      setFacetsWs((f) => ({ ...f, S1: lastS1.value_bool ? 1 : 0 }));
+    }
+  }, [lastS1, s1Name]);
+
+  useEffect(() => {
+    if (lastS2?.name === s2Name && typeof lastS2.value_bool === "boolean") {
+      setFacetsWs((f) => ({ ...f, S2: lastS2.value_bool ? 1 : 0 }));
+    }
+  }, [lastS2, s2Name]);
+
+  // Merge: WS prevalece sobre snapshot
+  const facets: Facets = useMemo(() => {
+    return {
+      S1: facetsWs.S1 ?? facetsFromSnapshot.S1 ?? 0,
+      S2: facetsWs.S2 ?? facetsFromSnapshot.S2 ?? 0,
+    };
+  }, [facetsFromSnapshot, facetsWs]);
   // sanity-check de arquivo (só quando NÃO está em câmera)
   useEffect(() => {
     if (showCamera) return;

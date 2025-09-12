@@ -1,138 +1,74 @@
 // src/components/dashboard/LiveMetrics.tsx
-// Versão enxuta: segue o atuador selecionado e mostra apenas:
-// ESTADO ATUAL, STATUS SISTEMA, CPM e TEMPO DE ATIVIDADE.
-
-import React, { useEffect, useMemo, useState } from "react";
+import React from "react";
 import { useLive } from "@/context/LiveContext";
-import { useActuatorSelection } from "@/context/ActuatorSelectionContext";
-import KpiCard from "./KpiCard";
-import { getOPCHistory } from "@/lib/api";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 
-type Facets = {
-  S1?: 0 | 1;
-  S2?: 0 | 1;
-  INICIA?: 0 | 1;
-  PARA?: 0 | 1;
-  V_AVANCO?: 0 | 1;
-  V_RECUO?: 0 | 1;
-};
-
-function statusFromFacets(f: Facets | undefined) {
-  if (!f) return { label: "—", sev: "gray" as const };
-  const a = f.S1 === 1;
-  const b = f.S2 === 1;
-  if (a && !b) return { label: "ABERTO", sev: "green" as const };
-  if (!a && b) return { label: "FECHADO", sev: "green" as const };
-  if (a && b) return { label: "CONFLITO", sev: "red" as const };
-  return { label: "TRANSIÇÃO", sev: "amber" as const };
-}
-
-function sevSystem(mode?: string) {
-  const m = (mode ?? "").toUpperCase();
-  if (m === "LIVE") return "green";
-  if (m === "DEMO") return "amber";
-  if (m === "DESLIGADO") return "red";
-  return "gray";
-}
-
-function formatDurationMs(ms: number): string {
-  if (ms <= 0 || !Number.isFinite(ms)) return "—";
-  const s = Math.floor(ms / 1000);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const ss = s % 60;
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${ss}s`;
-  return `${ss}s`;
-}
-
-export default function LiveMetrics() {
+const LiveMetrics: React.FC = () => {
   const { snapshot } = useLive();
-  const { selectedId } = useActuatorSelection();
 
-  const act =
-    snapshot?.actuators?.find((a) => a?.id === selectedId) ??
-    snapshot?.actuators?.[Math.max(0, (selectedId ?? 1) - 1)];
-
-  const st = statusFromFacets(act?.facets);
-  const cpm = act?.cpm ?? null;
-
-  // STATUS DO SISTEMA (só printa o que vier do backend)
-  const systemMode = snapshot?.system?.mode ?? "—";
-  const systemSev = sevSystem(systemMode);
-
-  // TEMPO DE ATIVIDADE: desde o primeiro INICIA nas últimas 12h
-  const [uptimeMs, setUptimeMs] = useState<number | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    let intervalId: ReturnType<typeof setInterval> | null = null;
-
-    (async () => {
-      try {
-        const hist = await getOPCHistory({
-          actuatorId: selectedId,
-          facet: "INICIA",
-          since: "-12h",
-          limit: 1,
-          asc: true,
-        });
-        if (cancelled) return;
-
-        const first = hist?.[0];
-        if (!first) {
-          setUptimeMs(null);
-          return;
-        }
-        const t0 = new Date(first.ts).getTime();
-
-        const tick = () => {
-          if (!cancelled) setUptimeMs(Date.now() - t0);
-        };
-
-        tick();
-        intervalId = setInterval(tick, 1000);
-      } catch {
-        if (!cancelled) setUptimeMs(null);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      if (intervalId) clearInterval(intervalId);
-    };
-  }, [selectedId]);
+  if (!snapshot) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Live Metrics</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-muted-foreground text-sm">
+            Aguardando dados do backend...
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
-    <div
-      className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(180px,1fr))]"
-      aria-label="Live KPI cards"
-    >
-      <KpiCard
-        title={`ESTADO ATUAL (A${selectedId})`}
-        value={st.label}
-        severity={st.sev}
-      />
+    <Card>
+      <CardHeader>
+        <CardTitle>Live Metrics</CardTitle>
+      </CardHeader>
+      <CardContent className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {/* Status do sistema */}
+        <div>
+          <p className="text-sm text-muted-foreground">System</p>
+          <p className="text-lg font-bold">
+            {snapshot.system.status.toUpperCase()}
+          </p>
+        </div>
 
-      <KpiCard
-        title="STATUS DO SISTEMA"
-        value={String(systemMode)}
-        severity={systemSev as any}
-      />
+        {/* CPM total */}
+        <div>
+          <p className="text-sm text-muted-foreground">Total CPM</p>
+          <p className="text-lg font-bold">
+            {snapshot.actuators.reduce((acc, a) => acc + (a.cpm || 0), 0)}
+          </p>
+        </div>
 
-      <KpiCard
-        title="CPM"
-        value={cpm ?? "—"}
-        unit="ciclos/min"
-        severity={cpm == null ? ("gray" as const) : ("green" as const)}
-        decimals={0}
-      />
+        {/* Atuadores */}
+        <div className="sm:col-span-3">
+          <p className="text-sm text-muted-foreground">Actuators</p>
+          <ul className="text-sm space-y-1">
+            {snapshot.actuators.map((a) => (
+              <li key={a.id}>
+                AT{a.id}: {a.facets.S2 ? "AVANÇADO" : a.facets.S1 ? "RECUADO" : "TRANSIÇÃO"} —{" "}
+                {a.cpm} CPM
+              </li>
+            ))}
+          </ul>
+        </div>
 
-      <KpiCard
-        title="TEMPO DE ATIVIDADE"
-        value={uptimeMs == null ? "—" : formatDurationMs(uptimeMs)}
-        severity={uptimeMs == null ? ("gray" as const) : ("green" as const)}
-      />
-    </div>
+        {/* MPU opcional */}
+        {snapshot.mpu && (
+          <div className="sm:col-span-3">
+            <p className="text-sm text-muted-foreground">MPU</p>
+            <p className="text-xs">
+              ax: {snapshot.mpu.ax.toFixed(2)} | ay: {snapshot.mpu.ay.toFixed(2)} | az:{" "}
+              {snapshot.mpu.az.toFixed(2)}
+            </p>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
-}
+};
+
+export default LiveMetrics;

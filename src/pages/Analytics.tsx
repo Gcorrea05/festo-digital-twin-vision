@@ -1,14 +1,12 @@
-
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Layout from '@/components/Layout';
 import ProductionStats from '@/components/dashboard/ProductionStats';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
-  PieChart, Pie, LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  PieChart, Pie, LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, Cell
 } from 'recharts';
-import { AreaChart, Area } from 'recharts';
 import { Download, Calendar } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Calendar as CalendarComponent } from '@/components/ui/calendar';
@@ -16,91 +14,224 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { format } from 'date-fns';
 import { ChartContainer, ChartTooltipContent } from '@/components/ui/chart';
 
-// Mock data for the analytics charts
-const productTypeData = [
-  { name: 'Type A', value: 540, color: '#4f46e5' },
-  { name: 'Type B', value: 310, color: '#3b82f6' },
-  { name: 'Type C', value: 280, color: '#0ea5e9' },
-  { name: 'Type D', value: 120, color: '#22d3ee' }
-];
+// ✅ IMPORTES CORRETOS DOS HOOKS DE MPU
+import { useMpuIds, useMpuHistory, useMpuStream } from '@/hooks/useMpu';
 
-const aiAccuracyData = [
-  { date: '2025-04-01', accuracy: 92.4, falsePositives: 5.1, falseNegatives: 2.5 },
-  { date: '2025-04-02', accuracy: 93.1, falsePositives: 4.8, falseNegatives: 2.1 },
-  { date: '2025-04-03', accuracy: 92.7, falsePositives: 5.0, falseNegatives: 2.3 },
-  { date: '2025-04-04', accuracy: 94.2, falsePositives: 3.6, falseNegatives: 2.2 },
-  { date: '2025-04-05', accuracy: 95.1, falsePositives: 3.2, falseNegatives: 1.7 },
-  { date: '2025-04-06', accuracy: 94.8, falsePositives: 3.5, falseNegatives: 1.7 },
-  { date: '2025-04-07', accuracy: 96.3, falsePositives: 2.4, falseNegatives: 1.3 }
-];
+// OPC
+import { getOPCHistory } from '@/lib/api';
+import { useOpcStream } from '@/hooks/useOpcStream';
 
-const operationalTimeData = [
-  { date: '2025-04-01', operational: 22.5, maintenance: 1.5, downtime: 0 },
-  { date: '2025-04-02', operational: 21, maintenance: 2, downtime: 1 },
-  { date: '2025-04-03', operational: 23.5, maintenance: 0.5, downtime: 0 },
-  { date: '2025-04-04', operational: 20, maintenance: 2, downtime: 2 },
-  { date: '2025-04-05', operational: 24, maintenance: 0, downtime: 0 },
-  { date: '2025-04-06', operational: 23, maintenance: 1, downtime: 0 },
-  { date: '2025-04-07', operational: 21.5, maintenance: 2, downtime: 0.5 }
-];
+type PieItem = { name: string; value: number; color?: string };
+type CpmPoint = { t: string; cpm: number };
+type OccItem = { name: string; value: number };
 
-const energyConsumptionData = [
-  { month: 'Jan', consumption: 2400 },
-  { month: 'Feb', consumption: 2210 },
-  { month: 'Mar', consumption: 2290 },
-  { month: 'Apr', consumption: 2000 },
-  { month: 'May', consumption: 2181 },
-  { month: 'Jun', consumption: 2500 },
-  { month: 'Jul', consumption: 2400 },
-  { month: 'Aug', consumption: 2290 },
-  { month: 'Sep', consumption: 2390 },
-  { month: 'Oct', consumption: 2490 },
-  { month: 'Nov', consumption: 2380 },
-  { month: 'Dec', consumption: 2290 }
-];
+const colorsAct = ['#4f46e5', '#0ea5e9'];
+const occColors = ['#2563eb', '#16a34a', '#f59e0b'];
 
-// KPI cards data
-const kpis = [
-  { title: "OEE (Overall Equipment Effectiveness)", value: "87.5%", change: "+2.3%", status: "improving" },
-  { title: "Daily Production Rate", value: "521 units", change: "-3.4%", status: "decreasing" },
-  { title: "Defect Rate", value: "3.2%", change: "-0.8%", status: "improving" },
-  { title: "Cycle Time", value: "14.3 sec", change: "-0.3 sec", status: "improving" },
-  { title: "AI Classification Accuracy", value: "96.3%", change: "+1.5%", status: "improving" },
-  { title: "Energy Efficiency", value: "84.1%", change: "+0.7%", status: "improving" }
-];
+function toMinuteKey(d: Date) {
+  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+}
 
 const Analytics = () => {
   const [date, setDate] = useState<Date | undefined>(new Date());
 
+  // ===== Integração MPU (real) =====
+  const { ids } = useMpuIds();
+  const [mpuId, setMpuId] = useState<string | null>(null);
+  useEffect(() => { if (!mpuId && ids.length) setMpuId(ids[0]); }, [ids, mpuId]);
+
+  const { rows } = useMpuHistory(mpuId, "-5m", 1000, true);
+  const { last } = useMpuStream({ id: mpuId || undefined });
+
+  const mpuSeriesRef = useRef<any[]>([]);
+  useEffect(() => { mpuSeriesRef.current = [...rows]; }, [rows]);
+  useEffect(() => {
+    if (last && mpuId && last.id === mpuId) {
+      mpuSeriesRef.current.push(last);
+      if (mpuSeriesRef.current.length > 1200) mpuSeriesRef.current.shift();
+    }
+  }, [last, mpuId]);
+  const chartData = useMemo(() => [...mpuSeriesRef.current], [rows, last]);
+
+  // ===== Production: Pie por Atuador (7 dias) + CPM 60 min (AT1+AT2) =====
+  const [prodPie, setProdPie] = useState<PieItem[]>([]);
+  const [cpmSeries, setCpmSeries] = useState<CpmPoint[]>([]);
+
+  async function loadProdPie() {
+    const [h1, h2] = await Promise.all([
+      getOPCHistory({ actuatorId: 1, facet: "S2", since: "-168h", asc: true }),
+      getOPCHistory({ actuatorId: 2, facet: "S2", since: "-168h", asc: true }).catch(() => [] as any),
+    ]);
+    const countRises = (hist: any[]) => {
+      let c = 0;
+      for (let i = 1; i < hist.length; i++) {
+        if (Number(hist[i - 1].value) === 0 && Number(hist[i].value) === 1) c++;
+      }
+      return c;
+    };
+    setProdPie([
+      { name: "AT1", value: countRises(h1), color: colorsAct[0] },
+      { name: "AT2", value: countRises(h2), color: colorsAct[1] },
+    ]);
+  }
+
+  async function loadCpm60() {
+    const now = Date.now();
+    const start = now - 60 * 60 * 1000;
+    const buckets = new Map<string, number>();
+    for (let i = 59; i >= 0; i--) buckets.set(toMinuteKey(new Date(now - i * 60000)), 0);
+
+    const agg = async (id: number) => {
+      const h = await getOPCHistory({ actuatorId: id, facet: "S2", since: "-60m", asc: true }).catch(() => [] as any);
+      for (let i = 1; i < h.length; i++) {
+        const prev = Number(h[i - 1].value), curr = Number(h[i].value);
+        if (prev === 0 && curr === 1) {
+          const ts = new Date(h[i].ts).getTime();
+          if (ts >= start) {
+            const key = toMinuteKey(new Date(ts));
+            buckets.set(key, (buckets.get(key) || 0) + 1);
+          }
+        }
+      }
+    };
+    await Promise.all([agg(1), agg(2)]);
+    setCpmSeries(Array.from(buckets.entries()).map(([t, cpm]) => ({ t, cpm })));
+  }
+  // ===== Operational: Ocupação (última 1h) com seletor de atuador =====
+  const [occAct, setOccAct] = useState<number>(1);
+  const [occupancy, setOccupancy] = useState<OccItem[]>([]);
+
+  async function loadOccupancy(id: number) {
+    const [h1, h2] = await Promise.all([
+      getOPCHistory({ actuatorId: id, facet: "S1", since: "-60m", asc: true }),
+      getOPCHistory({ actuatorId: id, facet: "S2", since: "-60m", asc: true }),
+    ]);
+    const now = Date.now();
+    const start = now - 60 * 60 * 1000;
+
+    type Ev = { ts: number; s1?: number; s2?: number };
+    const evs: Ev[] = [];
+    for (const r of h1) evs.push({ ts: new Date(r.ts).getTime(), s1: Number(r.value) });
+    for (const r of h2) evs.push({ ts: new Date(r.ts).getTime(), s2: Number(r.value) });
+    evs.sort((a, b) => a.ts - b.ts);
+
+    let curS1 = 0, curS2 = 0;
+    let lastTs = start;
+    let accS1 = 0, accS2 = 0, accTran = 0;
+
+    for (const e of evs) {
+      const ts = Math.max(start, Math.min(e.ts, now));
+      if (ts > lastTs) {
+        const dur = ts - lastTs;
+        if (curS1 === 1 && curS2 === 0) accS1 += dur;
+        else if (curS1 === 0 && curS2 === 1) accS2 += dur;
+        else accTran += dur;
+        lastTs = ts;
+      }
+      if (e.s1 !== undefined) curS1 = e.s1;
+      if (e.s2 !== undefined) curS2 = e.s2;
+    }
+    if (now > lastTs) {
+      const dur = now - lastTs;
+      if (curS1 === 1 && curS2 === 0) accS1 += dur;
+      else if (curS1 === 0 && curS2 === 1) accS2 += dur;
+      else accTran += dur;
+    }
+    const total = accS1 + accS2 + accTran || 1;
+    setOccupancy([
+      { name: "RECUADO (S1)", value: Math.round((accS1 / total) * 100) },
+      { name: "AVANÇADO (S2)", value: Math.round((accS2 / total) * 100) },
+      { name: "TRANSIÇÃO", value: Math.round((accTran / total) * 100) },
+    ]);
+  }
+
+  // ----- Efeitos iniciais -----
+  useEffect(() => { loadProdPie(); loadCpm60(); }, []);
+  useEffect(() => { loadOccupancy(occAct); }, [occAct]);
+
+  // ===== WS realtime: CPM (S2 A1 + S2 A2) =====
+  const { last: s2a1 } = useOpcStream({ name: "Avancado_1S2" });
+  const { last: s2a2 } = useOpcStream({ name: "Avancado_2S2" });
+
+  useEffect(() => {
+    const handle = (evt?: any) => {
+      if (!evt || evt.value_bool !== true) return;
+      const key = toMinuteKey(new Date());
+      setCpmSeries((old) => {
+        if (!old.length) return [{ t: key, cpm: 1 }];
+        const idx = old.findIndex((p) => p.t === key);
+        if (idx >= 0) {
+          const copy = [...old];
+          copy[idx] = { ...copy[idx], cpm: copy[idx].cpm + 1 };
+          return copy;
+        }
+        const next = [...old, { t: key, cpm: 1 }];
+        // mantém ~60 pontos (se ultrapassar, remove o primeiro)
+        return next.length > 60 ? next.slice(next.length - 60) : next;
+      });
+    };
+    handle(s2a1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s2a1]);
+
+  useEffect(() => {
+    const key = toMinuteKey(new Date());
+    if (s2a2?.value_bool === true) {
+      setCpmSeries((old) => {
+        if (!old.length) return [{ t: key, cpm: 1 }];
+        const idx = old.findIndex((p) => p.t === key);
+        if (idx >= 0) {
+          const copy = [...old];
+          copy[idx] = { ...copy[idx], cpm: copy[idx].cpm + 1 };
+          return copy;
+        }
+        const next = [...old, { t: key, cpm: 1 }];
+        return next.length > 60 ? next.slice(next.length - 60) : next;
+      });
+    }
+  }, [s2a2]);
+
+  // ===== WS realtime: Ocupação (S1/S2 do atuador selecionado) com debounce =====
+  const { last: s1Sel } = useOpcStream({ name: `Recuado_${occAct}S1` });
+  const { last: s2Sel } = useOpcStream({ name: `Avancado_${occAct}S2` });
+  const occTimer = useRef<number | null>(null);
+
+  const scheduleOccRefresh = () => {
+    if (occTimer.current) window.clearTimeout(occTimer.current);
+    occTimer.current = window.setTimeout(() => loadOccupancy(occAct), 400) as unknown as number;
+  };
+
+  useEffect(() => { if (typeof s1Sel?.value_bool === 'boolean') scheduleOccRefresh(); }, [s1Sel]);
+  useEffect(() => { if (typeof s2Sel?.value_bool === 'boolean') scheduleOccRefresh(); }, [s2Sel]);
+  useEffect(() => () => { 
+    if (occTimer.current) window.clearTimeout(occTimer.current); 
+  }, []);
+
   return (
     <Layout title="Analytics" description="Performance metrics and statistical analysis">
       <div className="grid grid-cols-12 gap-6">
-        {/* KPI summary cards */}
+        {/* KPI compactos reais */}
         <div className="col-span-12">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {kpis.map((kpi, index) => (
-              <Card key={index}>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {[
+              { title: "Weekly Total (AT1+AT2)", value: prodPie.reduce((s, p) => s + p.value, 0) + " cycles" },
+              { title: "Peak CPM (60m)", value: (cpmSeries.reduce((m, p) => Math.max(m, p.cpm), 0) || 0) + " cpm" },
+              { title: "Selected MPU", value: mpuId ?? "—" },
+            ].map((kpi, idx) => (
+              <Card key={idx}>
                 <CardContent className="pt-6">
                   <div className="flex justify-between items-start">
                     <div>
                       <p className="text-sm text-muted-foreground">{kpi.title}</p>
                       <p className="text-2xl font-bold mt-1">{kpi.value}</p>
                     </div>
-                    <span className={`text-xs font-medium px-2 py-1 rounded-full ${
-                      kpi.status === 'improving' 
-                        ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400' 
-                        : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
-                    }`}>
-                      {kpi.change}
-                    </span>
                   </div>
                 </CardContent>
               </Card>
             ))}
           </div>
         </div>
-
-        {/* Date picker and export controls */}
+        {/* Date picker + export CPM */}
         <div className="col-span-12 flex flex-col sm:flex-row justify-between items-center gap-4">
           <Popover>
             <PopoverTrigger asChild>
@@ -110,33 +241,34 @@ const Analytics = () => {
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-auto p-0" align="start">
-              <CalendarComponent
-                mode="single"
-                selected={date}
-                onSelect={setDate}
-                initialFocus
-              />
+              <CalendarComponent mode="single" selected={date} onSelect={setDate} initialFocus />
             </PopoverContent>
           </Popover>
-          
+
           <div className="flex gap-2">
-            <Button variant="outline">
+            <Button variant="outline" onClick={() => {
+              const cols = ["t","cpm"];
+              const csv = [cols.join(","), ...cpmSeries.map(r => `${r.t},${r.cpm}`)].join("\n");
+              const blob = new Blob([csv], { type: "text/csv" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = "cpm_60min.csv";
+              a.click();
+              URL.revokeObjectURL(url);
+            }}>
               <Download className="mr-2 h-4 w-4" />
-              Export CSV
-            </Button>
-            <Button variant="outline">
-              <Download className="mr-2 h-4 w-4" />
-              Export PDF
+              Export CPM CSV
             </Button>
           </div>
         </div>
 
-        {/* Production Analytics */}
+        {/* Production Analytics (component detalhado) */}
         <div className="col-span-12">
           <ProductionStats />
         </div>
-        
-        {/* Component Tabs */}
+
+        {/* Tabs com dados reais */}
         <div className="col-span-12">
           <Card>
             <CardHeader>
@@ -144,142 +276,122 @@ const Analytics = () => {
             </CardHeader>
             <CardContent>
               <Tabs defaultValue="production">
-                <TabsList className="grid w-full grid-cols-4">
+                <TabsList className="grid w-full grid-cols-3">
                   <TabsTrigger value="production">Production</TabsTrigger>
-                  <TabsTrigger value="ai">AI Performance</TabsTrigger>
                   <TabsTrigger value="operational">Operational Time</TabsTrigger>
-                  <TabsTrigger value="energy">Energy Consumption</TabsTrigger>
+                  <TabsTrigger value="mpu">MPU</TabsTrigger>
                 </TabsList>
-                
+
+                {/* Production Tab */}
                 <TabsContent value="production" className="pt-4">
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* Pie: Production by Actuator (7d) */}
                     <div className="h-80">
-                      <h3 className="text-lg font-medium mb-4">Product Distribution by Type</h3>
+                      <h3 className="text-lg font-medium mb-4">Production by Actuator (last 7 days)</h3>
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
                           <Pie
-                            data={productTypeData}
-                            cx="50%"
-                            cy="50%"
+                            data={prodPie}
+                            cx="50%" cy="50%"
                             labelLine={false}
                             outerRadius={100}
-                            fill="#8884d8"
                             dataKey="value"
                             label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
                           >
-                            {productTypeData.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={entry.color} />
+                            {prodPie.map((entry, i) => (
+                              <Cell key={entry.name} fill={entry.color || colorsAct[i % colorsAct.length]} />
                             ))}
                           </Pie>
-                          <Tooltip formatter={(value) => [`${value} units`, 'Quantity']} />
+                          <Tooltip formatter={(v) => [`${v} cycles`, 'Total']} />
                           <Legend />
                         </PieChart>
                       </ResponsiveContainer>
                     </div>
-                    
+
+                    {/* Line: CPM (60m, AT1+AT2) */}
                     <div className="h-80">
-                      <h3 className="text-lg font-medium mb-4">Daily Production Trend</h3>
+                      <h3 className="text-lg font-medium mb-4">Cycles per Minute — last 60 min</h3>
                       <ChartContainer className="h-full" config={{}}>
-                        <BarChart data={operationalTimeData}>
+                        <LineChart data={cpmSeries}>
                           <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="date" tickFormatter={(value) => new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} />
-                          <YAxis />
+                          <XAxis dataKey="t" />
+                          <YAxis allowDecimals={false} />
                           <Tooltip content={<ChartTooltipContent />} />
                           <Legend />
-                          <Bar dataKey="operational" name="Operational Hours" fill="#4f46e5" />
-                        </BarChart>
+                          <Line type="monotone" dataKey="cpm" name="Cycles/min" stroke="#4f46e5" strokeWidth={2} dot={false} />
+                        </LineChart>
                       </ChartContainer>
                     </div>
                   </div>
                 </TabsContent>
-                
-                <TabsContent value="ai" className="pt-4">
+
+                {/* Operational Time Tab */}
+                <TabsContent value="operational" className="pt-4">
+                  <div className="flex items-center gap-3 mb-4">
+                    <label className="text-sm">Actuator:</label>
+                    <select
+                      className="border rounded-md px-2 py-1 bg-background"
+                      value={occAct}
+                      onChange={(e) => setOccAct(Number(e.target.value))}
+                    >
+                      <option value={1}>AT1</option>
+                      <option value={2}>AT2</option>
+                    </select>
+                    <Button variant="outline" onClick={() => loadOccupancy(occAct)}>Refresh</Button>
+                  </div>
+
                   <div className="h-80">
-                    <h3 className="text-lg font-medium mb-4">AI Classification Performance</h3>
-                    <ChartContainer className="h-full" config={{}}>
-                      <LineChart data={aiAccuracyData}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="date" tickFormatter={(value) => new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} />
-                        <YAxis domain={[75, 100]} tickFormatter={(value) => `${value}%`} />
-                        <Tooltip content={<ChartTooltipContent />} />
+                    <h3 className="text-lg font-medium mb-4">State Occupancy (last 1h)</h3>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={occupancy}
+                          cx="50%" cy="50%"
+                          innerRadius={60} outerRadius={85}
+                          dataKey="value"
+                          paddingAngle={2}
+                          label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                        >
+                          {occupancy.map((_, i) => (<Cell key={i} fill={occColors[i % occColors.length]} />))}
+                        </Pie>
                         <Legend />
-                        <Line 
-                          type="monotone" 
-                          dataKey="accuracy" 
-                          stroke="#4f46e5" 
-                          strokeWidth={2} 
-                          name="Accuracy" 
-                        />
-                        <Line 
-                          type="monotone" 
-                          dataKey="falsePositives" 
-                          stroke="#ef4444" 
-                          strokeWidth={2} 
-                          name="False Positives" 
-                        />
-                        <Line 
-                          type="monotone" 
-                          dataKey="falseNegatives" 
-                          stroke="#f59e0b" 
-                          strokeWidth={2} 
-                          name="False Negatives" 
-                        />
-                      </LineChart>
-                    </ChartContainer>
+                        <Tooltip formatter={(v) => [`${v}%`, 'Percent']} />
+                      </PieChart>
+                    </ResponsiveContainer>
                   </div>
                 </TabsContent>
-                
-                <TabsContent value="operational" className="pt-4">
+
+                {/* MPU Tab */}
+                <TabsContent value="mpu" className="pt-4">
+                  <div className="flex items-center gap-3 mb-4">
+                    <label className="text-sm">MPU:</label>
+                    <select
+                      className="border rounded-md px-2 py-1 bg-background"
+                      value={mpuId ?? ""}
+                      onChange={(e) => setMpuId(e.target.value || null)}
+                    >
+                      {ids.map((id) => (
+                        <option key={id} value={id}>{id}</option>
+                      ))}
+                    </select>
+                    <span className="text-xs text-muted-foreground">
+                      Histórico 5 min + stream ao vivo
+                    </span>
+                  </div>
+
                   <div className="h-80">
-                    <h3 className="text-lg font-medium mb-4">Operational Time Distribution</h3>
+                    <h3 className="text-lg font-medium mb-4">MPU Acceleration (g)</h3>
                     <ChartContainer className="h-full" config={{}}>
-                      <AreaChart data={operationalTimeData}>
+                      <LineChart data={chartData}>
                         <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="date" tickFormatter={(value) => new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} />
+                        <XAxis dataKey="ts" tickFormatter={(v) => new Date(v).toLocaleTimeString(undefined, { minute: '2-digit', second: '2-digit' })} />
                         <YAxis />
                         <Tooltip content={<ChartTooltipContent />} />
                         <Legend />
-                        <Area 
-                          type="monotone" 
-                          dataKey="operational" 
-                          stackId="1" 
-                          stroke="#4f46e5" 
-                          fill="#4f46e5" 
-                          name="Operational" 
-                        />
-                        <Area 
-                          type="monotone" 
-                          dataKey="maintenance" 
-                          stackId="1" 
-                          stroke="#f59e0b" 
-                          fill="#f59e0b" 
-                          name="Maintenance" 
-                        />
-                        <Area 
-                          type="monotone" 
-                          dataKey="downtime" 
-                          stackId="1" 
-                          stroke="#ef4444" 
-                          fill="#ef4444" 
-                          name="Downtime" 
-                        />
-                      </AreaChart>
-                    </ChartContainer>
-                  </div>
-                </TabsContent>
-                
-                <TabsContent value="energy" className="pt-4">
-                  <div className="h-80">
-                    <h3 className="text-lg font-medium mb-4">Monthly Energy Consumption</h3>
-                    <ChartContainer className="h-full" config={{}}>
-                      <BarChart data={energyConsumptionData}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="month" />
-                        <YAxis tickFormatter={(value) => `${value} kWh`} />
-                        <Tooltip content={<ChartTooltipContent />} />
-                        <Legend />
-                        <Bar dataKey="consumption" name="Energy (kWh)" fill="#10b981" />
-                      </BarChart>
+                        <Line type="monotone" dataKey="ax" stroke="#4f46e5" strokeWidth={2} name="ax (g)" dot={false} />
+                        <Line type="monotone" dataKey="ay" stroke="#0ea5e9" strokeWidth={2} name="ay (g)" dot={false} />
+                        <Line type="monotone" dataKey="az" stroke="#22d3ee" strokeWidth={2} name="az (g)" dot={false} />
+                      </LineChart>
                     </ChartContainer>
                   </div>
                 </TabsContent>
