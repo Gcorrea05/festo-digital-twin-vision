@@ -1,4 +1,5 @@
 // src/lib/api.ts
+
 export type OPCFacet = "S1" | "S2" | "V_AVANCO" | "V_RECUO" | "INICIA" | "PARA";
 
 export type ActuatorLiveItem = {
@@ -168,6 +169,16 @@ export async function getMinuteAgg(
   params.set("act", act);
   if (since) params.set("since", since);
   return fetchJson<MinuteAggRow[]>(`/metrics/minute-agg?${params.toString()}`);
+}
+
+// Nova função para retornar CPM de atuador
+export async function getCpmByActuator(act: "A1" | "A2", since = "-60m"): Promise<number> {
+  const params = new URLSearchParams();
+  params.set("act", act);
+  if (since) params.set("since", since);
+  const data = await fetchJson<MinuteAggRow[]>(`/metrics/minute-agg?${params.toString()}`);
+  const cpm = data.reduce((acc, row) => acc + (row.cpm || 0), 0);
+  return cpm; // Retorna o total de CPM
 }
 
 // --- Monitoring-only endpoints ---
