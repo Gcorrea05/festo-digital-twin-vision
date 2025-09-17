@@ -1,26 +1,53 @@
-import React from 'react';
+import React, { useState } from 'react';
 import Layout from '@/components/Layout';
-import LiveMetrics from '@/components/dashboard/LiveMetrics';
 import SystemStatusPanel from '@/components/monitoring/SystemStatusPanel';
+import LiveMetricsMon from '@/components/monitoring/LiveMetricsMon';
 
 const Monitoring: React.FC = () => {
+  // seleção local do atuador (1 ou 2)
+  const [selected, setSelected] = useState<1 | 2>(1);
+
   return (
     <Layout
       title="Monitoring"
       description="Welcome to the IoTech Digitwin monitoring system"
     >
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* System Status à esquerda em telas grandes */}
-        <div className="lg:col-span-4">
+        {/* Painel de status do sistema à esquerda */}
+        <div className="lg:col-span-4 space-y-4">
+          {/* Seleção de atuador */}
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">Atuador:</span>
+            <div className="inline-flex rounded-xl p-1 bg-muted">
+              <button
+                type="button"
+                onClick={() => setSelected(1)}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition
+                  ${selected === 1 ? 'bg-background shadow' : 'opacity-70 hover:opacity-100'}`}
+              >
+                A1
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelected(2)}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition
+                  ${selected === 2 ? 'bg-background shadow' : 'opacity-70 hover:opacity-100'}`}
+              >
+                A2
+              </button>
+            </div>
+          </div>
+
           <SystemStatusPanel />
         </div>
 
-        {/* KPIs reais à direita (ou abaixo no mobile) */}
+        {/* 🔥 KPIs exclusivos da aba Monitoring à direita */}
         <div className="lg:col-span-8">
-          <LiveMetrics />
+          {/* Passamos o selecionado para os KPIs */}
+          <LiveMetricsMon selectedId={selected} />
         </div>
 
-        {/* Se quiser o 3D aqui depois, podemos adicionar abaixo */}
+        {/* Caso queira colocar 3D ou gráficos adicionais, use aqui */}
       </div>
     </Layout>
   );

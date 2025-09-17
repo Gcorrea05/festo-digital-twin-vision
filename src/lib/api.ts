@@ -169,3 +169,24 @@ export async function getMinuteAgg(
   if (since) params.set("since", since);
   return fetchJson<MinuteAggRow[]>(`/metrics/minute-agg?${params.toString()}`);
 }
+
+// --- Monitoring-only endpoints ---
+export async function getRuntime(): Promise<{ runtime_seconds: number; since: string | null }> {
+  const res = await fetch(`${import.meta.env.VITE_API_BASE}/api/live/runtime`);
+  if (!res.ok) throw new Error(`runtime: ${res.status}`);
+  return res.json();
+}
+
+type TimingRow = {
+  ts_utc: string | null;
+  dt_abre_s: number | null;
+  dt_fecha_s: number | null;
+  dt_ciclo_s: number | null;
+};
+export type ActuatorTimings = { actuator_id: number; last: TimingRow };
+
+export async function getActuatorTimings(): Promise<{ actuators: ActuatorTimings[] }> {
+  const res = await fetch(`${import.meta.env.VITE_API_BASE}/api/live/actuators/timings`);
+  if (!res.ok) throw new Error(`timings: ${res.status}`);
+  return res.json();
+}
