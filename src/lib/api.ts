@@ -1,5 +1,4 @@
 // src/lib/api.ts
-
 export type OPCFacet = "S1" | "S2" | "V_AVANCO" | "V_RECUO" | "INICIA" | "PARA";
 
 export type ActuatorLiveItem = {
@@ -171,16 +170,6 @@ export async function getMinuteAgg(
   return fetchJson<MinuteAggRow[]>(`/metrics/minute-agg?${params.toString()}`);
 }
 
-// Nova função para retornar CPM de atuador
-export async function getCpmByActuator(act: "A1" | "A2", since = "-60m"): Promise<number> {
-  const params = new URLSearchParams();
-  params.set("act", act);
-  if (since) params.set("since", since);
-  const data = await fetchJson<MinuteAggRow[]>(`/metrics/minute-agg?${params.toString()}`);
-  const cpm = data.reduce((acc, row) => acc + (row.cpm || 0), 0);
-  return cpm; // Retorna o total de CPM
-}
-
 // --- Monitoring-only endpoints ---
 export async function getRuntime(): Promise<{ runtime_seconds: number; since: string | null }> {
   const res = await fetch(`${import.meta.env.VITE_API_BASE}/api/live/runtime`);
@@ -199,5 +188,25 @@ export type ActuatorTimings = { actuator_id: number; last: TimingRow };
 export async function getActuatorTimings(): Promise<{ actuators: ActuatorTimings[] }> {
   const res = await fetch(`${import.meta.env.VITE_API_BASE}/api/live/actuators/timings`);
   if (!res.ok) throw new Error(`timings: ${res.status}`);
+  return res.json();
+}
+
+// CPM por atuador (A1/A2)
+export async function getCpmByActuator(
+  actuatorId: 1 | 2,
+  windowSeconds = 60
+): Promise<{ actuator_id: number; window_seconds: number; cycles: number; cpm: number }> {
+  const qs = new URLSearchParams({
+    actuator_id: String(actuatorId),
+    window_s: String(windowSeconds),
+  });
+  const res = await fetch(`${import.meta.env.VITE_API_BASE}/api/live/cycles/rate_by_actuator?${qs}`);
+  if (!res.ok) throw new Error(`cpm_by_actuator: ${res.status}`);
+  return res.json();
+}
+
+export async function getVibration(window_s: number = 2) {
+  const res = await fetch(`/api/live/vibration?window_s=${window_s}`);
+  if (!res.ok) throw new Error("Erro ao buscar vibração");
   return res.json();
 }

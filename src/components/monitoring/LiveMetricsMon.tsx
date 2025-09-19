@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useLive } from "@/context/LiveContext";
+
 let useActuatorSelection: any;
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -8,7 +9,12 @@ try {
   useActuatorSelection = undefined;
 }
 
-import { getRuntime, getActuatorTimings, ActuatorTimings, getCpmByActuator } from "@/lib/api";
+import {
+  getRuntime,
+  getActuatorTimings,
+  getVibration,
+  ActuatorTimings,
+} from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 type Props = { selectedId?: 1 | 2 };
@@ -21,7 +27,15 @@ function fmtSeconds(s?: number | null) {
   return `${m}m ${r}s`;
 }
 
-function Kpi({ title, value, subtitle }: { title: string; value: React.ReactNode; subtitle?: string }) {
+function Kpi({
+  title,
+  value,
+  subtitle,
+}: {
+  title: string;
+  value: React.ReactNode;
+  subtitle?: string;
+}) {
   return (
     <Card className="rounded-2xl shadow-sm">
       <CardHeader className="pb-0">
@@ -29,7 +43,9 @@ function Kpi({ title, value, subtitle }: { title: string; value: React.ReactNode
       </CardHeader>
       <CardContent className="pt-2">
         <div className="text-2xl font-semibold">{value}</div>
-        {subtitle && <div className="text-xs text-muted-foreground mt-1">{subtitle}</div>}
+        {subtitle && (
+          <div className="text-xs text-muted-foreground mt-1">{subtitle}</div>
+        )}
       </CardContent>
     </Card>
   );
@@ -40,20 +56,17 @@ export default function LiveMetricsMon({ selectedId: selectedIdProp }: Props) {
   const ctxSel = useActuatorSelection?.();
   const selectedId: 1 | 2 = selectedIdProp ?? (ctxSel?.selected as 1 | 2) ?? 1;
 
-  // ✅ CPM por atuador (poll 2s)
-  const [cpmAct, setCpmAct] = useState<number | null>(null);
+  // ✅ CPM (1 min) exatamente como no Dashboard: via snapshot do WS (/api/ws/snapshot)
+  const cpm1m =
+    typeof (snapshot as any)?.cycles?.cpm === "number"
+      ? ((snapshot as any).cycles.cpm as number)
+      : null;
 
-  // Vibration por atuador (assumindo MPU1↔A1, MPU2↔A2)
-  const vibOverall = useMemo(() => {
-    const items = snapshot?.vibration?.items as Array<{ overall: number; mpu_id: number }> | undefined;
-    if (!items?.length) return null;
-    const perSelected = items.filter((i) => Number(i.mpu_id) === Number(selectedId));
-    const arr = (perSelected.length ? perSelected : items).map((i) => Number(i.overall || 0));
-    return arr.length ? Math.max(...arr) : null;
-  }, [snapshot?.vibration, selectedId]);
-
-  // Runtime + Timings (poll 2s)
-  const [runtime, setRuntime] = useState<{ runtime_seconds: number; since: string | null } | null>(null);
+  // ---------- Runtime + Timings (poll fixo a cada 2s) ----------
+  const [runtime, setRuntime] = useState<{
+    runtime_seconds: number;
+    since: string | null;
+  } | null>(null);
   const [timings, setTimings] = useState<ActuatorTimings[] | null>(null);
 
   useEffect(() => {
@@ -69,6 +82,7 @@ export default function LiveMetricsMon({ selectedId: selectedIdProp }: Props) {
         /* noop */
       }
     };
+
     tickFixed();
     const idFixed = setInterval(tickFixed, 2000);
 
@@ -77,26 +91,6 @@ export default function LiveMetricsMon({ selectedId: selectedIdProp }: Props) {
       clearInterval(idFixed);
     };
   }, []);
-
-  // CPM depende do atuador selecionado → refaz o poll ao trocar A1/A2
-  useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      try {
-        const r = await getCpmByActuator(selectedId, 60);
-        if (!alive) return;
-        setCpmAct(r.cpm);
-      } catch {
-        /* noop */
-      }
-    };
-    tick();
-    const id = setInterval(tick, 2000);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
-  }, [selectedId]);
 
   const selectedTiming = useMemo(() => {
     const row = timings?.find((t) => t.actuator_id === selectedId)?.last;
@@ -108,19 +102,82 @@ export default function LiveMetricsMon({ selectedId: selectedIdProp }: Props) {
     };
   }, [timings, selectedId]);
 
+  // ---------- Vibration (poll do endpoint + fallback snapshot) ----------
+  type VibItem = { mpu_id: number; overall?: number };
+  const [vibItems, setVibItems] = useState<VibItem[] | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+
+    const tick = async () => {
+      try {
+        const data = await getVibration(2); // janela curta para "live"
+        if (!alive) return;
+        setVibItems((data?.items ?? []).map((i: any) => ({ mpu_id: Number(i.mpu_id), overall: i.overall })));
+      } catch {
+        // noop — manteremos o fallback via snapshot
+      }
+    };
+
+    tick();
+    const id = setInterval(tick, 2000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  // Mapeamento simples A1→MPU1, A2→MPU2
+  const selectedMpuId = selectedId;
+
+  const vibOverall = useMemo(() => {
+    // 1) tenta via endpoint
+    const byEndpoint = vibItems?.find((x) => Number(x.mpu_id) === Number(selectedMpuId));
+    if (byEndpoint && typeof byEndpoint.overall === "number") return byEndpoint.overall;
+
+    // 2) fallback: snapshot
+    const items = snapshot?.vibration?.items as Array<{ overall: number; mpu_id: number }> | undefined;
+    if (!items?.length) return null;
+    const bySnapshot = items.find((x) => Number(x.mpu_id) === Number(selectedMpuId));
+    return typeof bySnapshot?.overall === "number" ? bySnapshot.overall : null;
+  }, [vibItems, snapshot?.vibration, selectedMpuId]);
+
   return (
     <div className="grid gap-3 md:grid-cols-3 lg:grid-cols-6">
-      <Kpi title="CPM (1 min)" value={cpmAct != null ? Number(cpmAct).toFixed(1) : "—"} />
+      {/* CPM 1 min - igual ao Dashboard; subtitle indica atuador selecionado */}
       <Kpi
-        title="Runtime"
-        value={fmtSeconds(runtime?.runtime_seconds ?? null)}
-        subtitle={runtime?.since ? `desde ${new Date(runtime.since).toLocaleTimeString()}` : undefined}
+        title="CPM (1 min)"
+        value={cpm1m != null ? cpm1m.toFixed(1) : "—"}
+        subtitle={`atuador A${selectedId}`}
       />
-      <Kpi title="Vibration (overall)" value={vibOverall != null ? vibOverall.toFixed(2) : "—"} />
+
+      {/* Sistema Ligado (runtime do sistema) */}
+      <Kpi
+        title="Sistema Ligado"
+        value={fmtSeconds(runtime?.runtime_seconds ?? null)}
+        subtitle={
+          runtime?.since
+            ? `desde ${new Date(runtime.since).toLocaleString()}`
+            : "sem registro de INICIA"
+        }
+      />
+
+      {/* Vibration overall (por atuador selecionado, via endpoint com fallback) */}
+      <Kpi
+        title="Vibration (overall)"
+        value={vibOverall != null ? vibOverall.toFixed(2) : "—"}
+        subtitle={`MPU ${selectedMpuId}`}
+      />
+
+      {/* Timings do atuador selecionado */}
       <Kpi
         title="DTabre (últ.)"
         value={fmtSeconds(selectedTiming.abre)}
-        subtitle={selectedTiming.ts ? `ts ${new Date(selectedTiming.ts).toLocaleTimeString()}` : undefined}
+        subtitle={
+          selectedTiming.ts
+            ? `ts ${new Date(selectedTiming.ts).toLocaleTimeString()}`
+            : undefined
+        }
       />
       <Kpi title="DTfecha (últ.)" value={fmtSeconds(selectedTiming.fecha)} />
       <Kpi title="DTciclo (últ.)" value={fmtSeconds(selectedTiming.ciclo)} />
