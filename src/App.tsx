@@ -11,6 +11,8 @@ import Monitoring from "./pages/Monitoring";
 import Analytics from "./pages/Analytics";
 import Alerts from "./pages/Alerts";
 import NotFound from "./pages/NotFound";
+import Simulation from "@/pages/Simulation";
+
 
 const queryClient = new QueryClient();
 

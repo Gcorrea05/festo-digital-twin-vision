@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Gauge, AlertCircle, BarChart2, Camera, ChevronLeft } from 'lucide-react';
+import { Gauge, AlertCircle, BarChart2, Camera, ChevronLeft, Cpu } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/context/AuthContext';
 import { cn } from '@/lib/utils';
@@ -28,6 +28,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
     { name: 'Monitoring', href: '/monitoring', icon: Camera, active: pathname === '/monitoring' },
     { name: 'Analytics', href: '/analytics', icon: BarChart2, active: pathname === '/analytics' },
     { name: 'Alerts', href: '/alerts', icon: AlertCircle, active: pathname === '/alerts' },
+    { name: 'Simulation', href: '/Simulation', icon: Cpu, active: pathname === '/Simulation' }, // 🔥 Novo item
   ];
 
   return (
@@ -38,7 +39,6 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
 
       <aside
         className={cn(
-          // FIXO e alinhado sob o header fixo de 64px (h-16)
           'fixed left-0 top-16 z-40 w-64 h-[calc(100vh-64px)]',
           'flex flex-col min-h-0',
           'bg-sidebar/90 dark:bg-sidebar/85 backdrop-blur-md',
