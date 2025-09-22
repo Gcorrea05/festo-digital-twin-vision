@@ -49,11 +49,11 @@ export default function SystemStatusPanel() {
   const components = useMemo(() => {
     const c = (snapshot as any)?.system?.components ?? {};
     return {
-      conveyor: normalize(c.conveyor ?? c.conveyors ?? c.line),
-      sensors: normalize(c.sensors ?? c.sensorBus),
-      actuators: normalize(c.actuators ?? c.drives),
-      control: normalize(c.control ?? c.controlSystem ?? c.plc),
-    } as Record<'conveyor' | 'sensors' | 'actuators' | 'control', Sev>;
+      actuators: normalize(c.actuators),
+      sensors: normalize(c.sensors),
+      transmission: normalize(c.transmission),
+      control: normalize(c.control),
+    } as Record<'actuators' | 'sensors' | 'transmission' | 'control', Sev>;
   }, [snapshot]);
 
   // Overall = pior estado entre os componentes (down > warning > operational > unknown)
@@ -75,19 +75,11 @@ export default function SystemStatusPanel() {
 
   const overallPill = pill(overall);
 
-  /** 
-   * Mapeamento exibido (exatamente como você pediu no print):
-   *  - Actuators    ← components.conveyor
-   *  - Sensors      ← components.sensors
-   *  - Transmition  ← components.actuators
-   *  - Integration  ← components.control
-   * 
-   * Se quiser alinhar os nomes com as fontes reais, basta trocar a propriedade `key`.
-   */
+  // Mapeamento exibido
   const ROWS: Array<{ label: string; sev: Sev }> = [
-    { label: 'Actuators',   sev: components.conveyor },
+    { label: 'Actuators',   sev: components.actuators },
     { label: 'Sensors',     sev: components.sensors },
-    { label: 'Transmition', sev: components.actuators },
+    { label: 'Transmition', sev: components.transmission },
     { label: 'Integration', sev: components.control },
   ];
 
