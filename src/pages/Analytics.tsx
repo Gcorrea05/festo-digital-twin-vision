@@ -1,6 +1,6 @@
-// src/pages/Analytics.tsx
+// src/pages/Analytics.tsx (parte 1)
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Layout from "@/components/Layout";
+// ❌ Removido: import Layout from "@/components/Layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -11,7 +11,6 @@ import {
   CartesianGrid,
   Tooltip,
   Legend,
-  ResponsiveContainer,
   BarChart,
   Bar,
 } from "recharts";
@@ -19,10 +18,21 @@ import { ChartContainer, ChartTooltipContent } from "@/components/ui/chart";
 
 // Hooks
 import { useMpuIds, useMpuHistory, useMpuStream } from "@/hooks/useMpu";
-import { useOpcStream } from "@/hooks/useOpcStream";
+// import { useOpcStream } from "@/hooks/useOpcStream"; // não usado aqui
 
 // API
 import { getOPCHistory, getMinuteAgg } from "@/lib/api";
+
+// helper genérico (normaliza para array)
+function toArray<T = any>(x: any): T[] {
+  if (Array.isArray(x)) return x as T[];
+  if (!x) return [];
+  if (typeof x === "object") {
+    if (Array.isArray((x as any).ids)) return (x as any).ids as T[];
+    return Object.values(x) as T[];
+  }
+  return [];
+}
 
 // ---------- Tipos ----------
 type CpmPoint = { t: string; A1: number; A2: number };
@@ -38,7 +48,6 @@ type MpuRowLike = {
   az_g?: number;
 };
 type MpuStreamEvt = { id?: string; ts?: string; ax?: number; ay?: number; az?: number } | null;
-type OpcEvt = { value_bool?: boolean } | null;
 type MinuteAgg = {
   minute: string;
   t_open_ms_avg: number | null;
@@ -59,12 +68,13 @@ const toMinuteKey = (d: Date) =>
 const Analytics: React.FC = () => {
   // ===== MPU (ids, histórico 5m, stream) =====
   const { ids } = useMpuIds();
+  const idsArray = useMemo<(string | number)[]>(() => toArray(ids), [ids]);
   const [mpuId, setMpuId] = useState<string | null>(null);
-  useEffect(() => {
-    if (!mpuId && ids.length) setMpuId(ids[0]);
-  }, [ids, mpuId]);
 
-  // histórico normalizado pelo hook + stream
+  useEffect(() => {
+    if (!mpuId && idsArray.length) setMpuId(String(idsArray[0]));
+  }, [idsArray, mpuId]);
+
   const { rows } = useMpuHistory(mpuId, "-5m", 1000, true);
   const { last } = useMpuStream({ id: mpuId || undefined });
 
@@ -110,6 +120,7 @@ const Analytics: React.FC = () => {
     const keys = Array.from({ length: 60 }, (_, i) =>
       toMinuteKey(new Date(now - (59 - i) * 60000))
     );
+// src/pages/Analytics.tsx (parte 2)
     const buckets = new Map<string, { A1: number; A2: number }>(
       keys.map((k) => [k, { A1: 0, A2: 0 }])
     );
@@ -183,77 +194,187 @@ const Analytics: React.FC = () => {
 
   // =================== UI ===================
   return (
-    <Layout title="Analytics" description="Performance metrics and statistical analysis">
-      <div className="grid grid-cols-12 gap-6">
-        <div className="col-span-12">
-          <Card>
-            <CardHeader>
-              <CardTitle>Performance Analytics</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Tabs defaultValue="production">
-                <TabsList className="grid w-full grid-cols-3 md:grid-cols-4">
-                  <TabsTrigger value="production">Production</TabsTrigger>
-                  <TabsTrigger value="operational">Operational Time</TabsTrigger>
-                  <TabsTrigger value="mpu">MPU</TabsTrigger>
-                  <TabsTrigger value="metrics">Metrics</TabsTrigger>
-                </TabsList>
+    <div className="grid grid-cols-12 gap-6">
+      <div className="col-span-12">
+        <Card>
+          <CardHeader>
+            <CardTitle>Performance Analytics</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Tabs defaultValue="production">
+              <TabsList className="grid w-full grid-cols-3 md:grid-cols-4">
+                <TabsTrigger value="production">Production</TabsTrigger>
+                <TabsTrigger value="operational">Operational Time</TabsTrigger>
+                <TabsTrigger value="mpu">MPU</TabsTrigger>
+                <TabsTrigger value="metrics">Metrics</TabsTrigger>
+              </TabsList>
 
-                {/* Production: CPM por minuto (barras) + seleção de A1/A2 */}
-                <TabsContent value="production" className="pt-4">
-                  <div className="flex items-center gap-4 mb-3">
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={showA1}
-                        onChange={(e) => setShowA1(e.target.checked)}
-                      />
-                      AT1
-                    </label>
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={showA2}
-                        onChange={(e) => setShowA2(e.target.checked)}
-                      />
-                      AT2
-                    </label>
-                  </div>
-                  <div className="h-80">
-                    <ChartContainer className="h-full" config={{}}>
-                      <BarChart data={cpmSeries}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="t" />
-                        <YAxis allowDecimals={false} />
-                        <Tooltip content={<ChartTooltipContent />} />
-                        <Legend />
-                        {showA1 && <Bar dataKey="A1" name="AT1 CPM" fill="#4f46e5" />}
-                        {showA2 && <Bar dataKey="A2" name="AT2 CPM" fill="#0ea5e9" />}
-                      </BarChart>
-                    </ChartContainer>
-                  </div>
-                </TabsContent>
+              {/* Production: CPM por minuto (barras) + seleção de A1/A2 */}
+              <TabsContent value="production" className="pt-4">
+                <div className="flex items-center gap-4 mb-3">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={showA1}
+                      onChange={(e) => setShowA1(e.target.checked)}
+                    />
+                    AT1
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={showA2}
+                      onChange={(e) => setShowA2(e.target.checked)}
+                    />
+                    AT2
+                  </label>
+                </div>
+                <div className="h-80">
+                  <ChartContainer className="h-full" config={{}}>
+                    <BarChart data={cpmSeries}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="t" />
+                      <YAxis allowDecimals={false} />
+                      <Tooltip content={<ChartTooltipContent />} />
+                      <Legend />
+                      <Bar dataKey="A1" name="AT1 CPM" fill="#4f46e5" hide={!showA1} />
+                      <Bar dataKey="A2" name="AT2 CPM" fill="#0ea5e9" hide={!showA2} />
+                    </BarChart>
+                  </ChartContainer>
+                </div>
+              </TabsContent>
 
-                {/* Operational Time: Runtime × Nº de Ciclos (atuador escolhido) */}
-                <TabsContent value="operational" className="pt-4">
-                  <div className="flex items-center gap-3 mb-3">
-                    <span className="text-sm">Actuator:</span>
-                    <select
-                      className="border rounded-md px-2 py-1 bg-background"
-                      value={opAct}
-                      onChange={(e) => setOpAct(Number(e.target.value) as 1 | 2)}
+              {/* Operational Time: Runtime × Nº de Ciclos (atuador escolhido) */}
+              <TabsContent value="operational" className="pt-4">
+                <div className="flex items-center gap-3 mb-3">
+                  <span className="text-sm">Actuator:</span>
+                  <select
+                    className="border rounded-md px-2 py-1 bg-background"
+                    value={opAct}
+                    onChange={(e) => setOpAct(Number(e.target.value) as 1 | 2)}
+                  >
+                    <option value={1}>AT1</option>
+                    <option value={2}>AT2</option>
+                  </select>
+                </div>
+                <div className="h-80">
+                  <ChartContainer className="h-full" config={{}}>
+                    <LineChart
+                      data={(opAct === 1 ? aggA1 : aggA2).map((r) => ({
+                        minute: r.minute,
+                        cycles: r.cpm,
+                        runtime: r.runtime_s,
+                      }))}
                     >
-                      <option value={1}>AT1</option>
-                      <option value={2}>AT2</option>
-                    </select>
-                  </div>
-                  <div className="h-80">
-                    <ChartContainer className="h-full" config={{}}>
-                      <LineChart
-                        data={(opAct === 1 ? aggA1 : aggA2).map((r) => ({
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="minute" />
+                      <YAxis yAxisId="left" />
+                      <YAxis yAxisId="right" orientation="right" />
+                      <Tooltip content={<ChartTooltipContent />} />
+                      <Legend />
+                      <Line
+                        yAxisId="left"
+                        type="monotone"
+                        dataKey="cycles"
+                        name="Cycles/min"
+                        stroke="#4f46e5"
+                        dot={false}
+                      />
+                      <Line
+                        yAxisId="right"
+                        type="monotone"
+                        dataKey="runtime"
+                        name="Runtime (s)"
+                        stroke="#16a34a"
+                        dot={false}
+                      />
+                    </LineChart>
+                  </ChartContainer>
+                </div>
+              </TabsContent>
+// src/pages/Analytics.tsx (parte 3)
+              {/* MPU */}
+              <TabsContent value="mpu" className="pt-4">
+                <div className="flex items-center gap-3 mb-3">
+                  <span className="text-sm">MPU:</span>
+                  <select
+                    className="border rounded-md px-2 py-1 bg-background"
+                    value={mpuId ?? ""}
+                    onChange={(e) => setMpuId(e.target.value || null)}
+                  >
+                    {idsArray.map((id) => {
+                      const sid = String(id);
+                      return (
+                        <option key={sid} value={sid}>
+                          {sid}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+                <div className="h-80">
+                  <ChartContainer className="h-full" config={{}}>
+                    <LineChart data={mpuChartData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="ts" />
+                      <YAxis />
+                      <Tooltip content={<ChartTooltipContent />} />
+                      <Legend />
+                      <Line
+                        type="monotone"
+                        dataKey="ax"
+                        stroke="#4f46e5"
+                        strokeWidth={2}
+                        name="ax (g)"
+                        dot={false}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="ay"
+                        stroke="#0ea5e9"
+                        strokeWidth={2}
+                        name="ay (g)"
+                        dot={false}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="az"
+                        stroke="#22d3ee"
+                        strokeWidth={2}
+                        name="az (g)"
+                        dot={false}
+                      />
+                    </LineChart>
+                  </ChartContainer>
+                </div>
+              </TabsContent>
+
+              {/* Metrics: usuário escolhe qual gráfico gerar */}
+              <TabsContent value="metrics" className="pt-4">
+                <div className="flex flex-wrap items-center gap-3 mb-3">
+                  <span className="text-sm">Gráfico:</span>
+                  <select
+                    className="border rounded-md px-2 py-1 bg-background"
+                    value={metricChoice}
+                    onChange={(e) => setMetricChoice(e.target.value as typeof metricChoice)}
+                  >
+                    <option value="vib_x_open">Vib × TAbre</option>
+                    <option value="vib_x_close">Vib × TFecha</option>
+                    <option value="vib_x_runtime">Vib × Runtime</option>
+                    <option value="times_x_runtime">TAbre/TFecha/TCiclo × Runtime</option>
+                    <option value="a1xa2_cpm_runtime">A1×A2 — CPM & Runtime</option>
+                  </select>
+                </div>
+                <div className="h-80">
+                  <ChartContainer className="h-full" config={{}}>
+                    {metricChoice === "a1xa2_cpm_runtime" ? (
+                      <BarChart
+                        data={joined.map((r) => ({
                           minute: r.minute,
-                          cycles: r.cpm,
-                          runtime: r.runtime_s,
+                          cpm_A1: r.a1?.cpm ?? 0,
+                          cpm_A2: r.a2?.cpm ?? 0,
+                          rt_A1: r.a1?.runtime_s ?? 0,
+                          rt_A2: r.a2?.runtime_s ?? 0,
                         }))}
                       >
                         <CartesianGrid strokeDasharray="3 3" />
@@ -262,342 +383,101 @@ const Analytics: React.FC = () => {
                         <YAxis yAxisId="right" orientation="right" />
                         <Tooltip content={<ChartTooltipContent />} />
                         <Legend />
+                        <Bar yAxisId="left" dataKey="cpm_A1" name="CPM A1" fill="#4f46e5" />
+                        <Bar yAxisId="left" dataKey="cpm_A2" name="CPM A2" fill="#0ea5e9" />
                         <Line
-                          yAxisId="left"
+                          yAxisId="right"
                           type="monotone"
-                          dataKey="cycles"
-                          name="Cycles/min"
-                          stroke="#4f46e5"
+                          dataKey="rt_A1"
+                          name="Runtime A1 (s)"
+                          stroke="#16a34a"
                           dot={false}
                         />
                         <Line
                           yAxisId="right"
                           type="monotone"
-                          dataKey="runtime"
-                          name="Runtime (s)"
-                          stroke="#16a34a"
+                          dataKey="rt_A2"
+                          name="Runtime A2 (s)"
+                          stroke="#f59e0b"
                           dot={false}
                         />
-                      </LineChart>
-                    </ChartContainer>
-                  </div>
-                </TabsContent>
-
-                {/* MPU */}
-                <TabsContent value="mpu" className="pt-4">
-                  <div className="flex items-center gap-3 mb-3">
-                    <span className="text-sm">MPU:</span>
-                    <select
-                      className="border rounded-md px-2 py-1 bg-background"
-                      value={mpuId ?? ""}
-                      onChange={(e) => setMpuId(e.target.value || null)}
-                    >
-                      {ids.map((id) => (
-                        <option key={id} value={id}>
-                          {id}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="h-80">
-                    <ChartContainer className="h-full" config={{}}>
-                      <LineChart data={mpuChartData}>
+                      </BarChart>
+                    ) : (
+                      <LineChart
+                        data={joined.map((r) => ({
+                          minute: r.minute,
+                          vib_A1: r.a1?.vib_avg ?? null,
+                          vib_A2: r.a2?.vib_avg ?? null,
+                          to_A1: r.a1?.t_open_ms_avg ?? null,
+                          to_A2: r.a2?.t_open_ms_avg ?? null,
+                          tf_A1: r.a1?.t_close_ms_avg ?? null,
+                          tf_A2: r.a2?.t_close_ms_avg ?? null,
+                          tc_A1: r.a1?.t_cycle_ms_avg ?? null,
+                          tc_A2: r.a2?.t_cycle_ms_avg ?? null,
+                          rt_A1: r.a1?.runtime_s ?? 0,
+                          rt_A2: r.a2?.runtime_s ?? 0,
+                        }))}
+                      >
                         <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="ts" />
-                        <YAxis />
+                        <XAxis dataKey="minute" />
+                        <YAxis yAxisId="left" />
+                        <YAxis yAxisId="right" orientation="right" />
                         <Tooltip content={<ChartTooltipContent />} />
                         <Legend />
-                        <Line
-                          type="monotone"
-                          dataKey="ax"
-                          stroke="#4f46e5"
-                          strokeWidth={2}
-                          name="ax (g)"
-                          dot={false}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="ay"
-                          stroke="#0ea5e9"
-                          strokeWidth={2}
-                          name="ay (g)"
-                          dot={false}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="az"
-                          stroke="#22d3ee"
-                          strokeWidth={2}
-                          name="az (g)"
-                          dot={false}
-                        />
-                      </LineChart>
-                    </ChartContainer>
-                  </div>
-                </TabsContent>
+                        {/* As quatro variantes de gráfico */}
+                        {/* vib_x_open */}
+                        {metricChoice === "vib_x_open" && (
+                          <>
+                            <Line yAxisId="left" type="monotone" dataKey="vib_A1" name="Vib A1" stroke="#4f46e5" dot={false} />
+                            <Line yAxisId="left" type="monotone" dataKey="vib_A2" name="Vib A2" stroke="#16a34a" dot={false} />
+                            <Line yAxisId="right" type="monotone" dataKey="to_A1" name="TAbre A1 (ms)" stroke="#0ea5e9" dot={false} />
+                            <Line yAxisId="right" type="monotone" dataKey="to_A2" name="TAbre A2 (ms)" stroke="#f59e0b" dot={false} />
+                          </>
+                        )}
 
-                {/* Metrics: usuário escolhe qual gráfico gerar */}
-                <TabsContent value="metrics" className="pt-4">
-                  <div className="flex flex-wrap items-center gap-3 mb-3">
-                    <span className="text-sm">Gráfico:</span>
-                    <select
-                      className="border rounded-md px-2 py-1 bg-background"
-                      value={metricChoice}
-                      onChange={(e) => setMetricChoice(e.target.value as typeof metricChoice)}
-                    >
-                      <option value="vib_x_open">Vib × TAbre</option>
-                      <option value="vib_x_close">Vib × TFecha</option>
-                      <option value="vib_x_runtime">Vib × Runtime</option>
-                      <option value="times_x_runtime">TAbre/TFecha/TCiclo × Runtime</option>
-                      <option value="a1xa2_cpm_runtime">A1×A2 — CPM & Runtime</option>
-                    </select>
-                  </div>
-                  <div className="h-80">
-                    <ChartContainer className="h-full" config={{}}>
-                      {metricChoice === "a1xa2_cpm_runtime" ? (
-                        <BarChart
-                          data={joined.map((r) => ({
-                            minute: r.minute,
-                            cpm_A1: r.a1?.cpm ?? 0,
-                            cpm_A2: r.a2?.cpm ?? 0,
-                            rt_A1: r.a1?.runtime_s ?? 0,
-                            rt_A2: r.a2?.runtime_s ?? 0,
-                          }))}
-                        >
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="minute" />
-                          <YAxis yAxisId="left" />
-                          <YAxis yAxisId="right" orientation="right" />
-                          <Tooltip content={<ChartTooltipContent />} />
-                          <Legend />
-                          <Bar yAxisId="left" dataKey="cpm_A1" name="CPM A1" fill="#4f46e5" />
-                          <Bar yAxisId="left" dataKey="cpm_A2" name="CPM A2" fill="#0ea5e9" />
-                          <Line
-                            yAxisId="right"
-                            type="monotone"
-                            dataKey="rt_A1"
-                            name="Runtime A1 (s)"
-                            stroke="#16a34a"
-                            dot={false}
-                          />
-                          <Line
-                            yAxisId="right"
-                            type="monotone"
-                            dataKey="rt_A2"
-                            name="Runtime A2 (s)"
-                            stroke="#f59e0b"
-                            dot={false}
-                          />
-                        </BarChart>
-                      ) : (
-                        <LineChart
-                          data={joined.map((r) => ({
-                            minute: r.minute,
-                            vib_A1: r.a1?.vib_avg ?? null,
-                            vib_A2: r.a2?.vib_avg ?? null,
-                            to_A1: r.a1?.t_open_ms_avg ?? null,
-                            to_A2: r.a2?.t_open_ms_avg ?? null,
-                            tf_A1: r.a1?.t_close_ms_avg ?? null,
-                            tf_A2: r.a2?.t_close_ms_avg ?? null,
-                            tc_A1: r.a1?.t_cycle_ms_avg ?? null,
-                            tc_A2: r.a2?.t_cycle_ms_avg ?? null,
-                            rt_A1: r.a1?.runtime_s ?? 0,
-                            rt_A2: r.a2?.runtime_s ?? 0,
-                          }))}
-                        >
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="minute" />
-                          <YAxis yAxisId="left" />
-                          <YAxis yAxisId="right" orientation="right" />
-                          <Tooltip content={<ChartTooltipContent />} />
-                          <Legend />
-                          {metricChoice === "vib_x_open" && (
-                            <>
-                              <Line
-                                yAxisId="left"
-                                type="monotone"
-                                dataKey="vib_A1"
-                                name="Vib A1"
-                                stroke="#4f46e5"
-                                dot={false}
-                              />
-                              <Line
-                                yAxisId="left"
-                                type="monotone"
-                                dataKey="vib_A2"
-                                name="Vib A2"
-                                stroke="#16a34a"
-                                dot={false}
-                              />
-                              <Line
-                                yAxisId="right"
-                                type="monotone"
-                                dataKey="to_A1"
-                                name="TAbre A1 (ms)"
-                                stroke="#0ea5e9"
-                                dot={false}
-                              />
-                              <Line
-                                yAxisId="right"
-                                type="monotone"
-                                dataKey="to_A2"
-                                name="TAbre A2 (ms)"
-                                stroke="#f59e0b"
-                                dot={false}
-                              />
-                            </>
-                          )}
-                          {metricChoice === "vib_x_close" && (
-                            <>
-                              <Line
-                                yAxisId="left"
-                                type="monotone"
-                                dataKey="vib_A1"
-                                name="Vib A1"
-                                stroke="#4f46e5"
-                                dot={false}
-                              />
-                              <Line
-                                yAxisId="left"
-                                type="monotone"
-                                dataKey="vib_A2"
-                                name="Vib A2"
-                                stroke="#16a34a"
-                                dot={false}
-                              />
-                              <Line
-                                yAxisId="right"
-                                type="monotone"
-                                dataKey="tf_A1"
-                                name="TFecha A1 (ms)"
-                                stroke="#0ea5e9"
-                                dot={false}
-                              />
-                              <Line
-                                yAxisId="right"
-                                type="monotone"
-                                dataKey="tf_A2"
-                                name="TFecha A2 (ms)"
-                                stroke="#f59e0b"
-                                dot={false}
-                              />
-                            </>
-                          )}
-                          {metricChoice === "vib_x_runtime" && (
-                            <>
-                              <Line
-                                yAxisId="left"
-                                type="monotone"
-                                dataKey="vib_A1"
-                                name="Vib A1"
-                                stroke="#4f46e5"
-                                dot={false}
-                              />
-                              <Line
-                                yAxisId="left"
-                                type="monotone"
-                                dataKey="vib_A2"
-                                name="Vib A2"
-                                stroke="#16a34a"
-                                dot={false}
-                              />
-                              <Line
-                                yAxisId="right"
-                                type="monotone"
-                                dataKey="rt_A1"
-                                name="Runtime A1 (s)"
-                                stroke="#0ea5e9"
-                                dot={false}
-                              />
-                              <Line
-                                yAxisId="right"
-                                type="monotone"
-                                dataKey="rt_A2"
-                                name="Runtime A2 (s)"
-                                stroke="#f59e0b"
-                                dot={false}
-                              />
-                            </>
-                          )}
-                          {metricChoice === "times_x_runtime" && (
-                            <>
-                              <Line
-                                yAxisId="left"
-                                type="monotone"
-                                dataKey="to_A1"
-                                name="TAbre A1 (ms)"
-                                stroke="#4f46e5"
-                                dot={false}
-                              />
-                              <Line
-                                yAxisId="left"
-                                type="monotone"
-                                dataKey="tf_A1"
-                                name="TFecha A1 (ms)"
-                                stroke="#0ea5e9"
-                                dot={false}
-                              />
-                              <Line
-                                yAxisId="left"
-                                type="monotone"
-                                dataKey="tc_A1"
-                                name="TCiclo A1 (ms)"
-                                stroke="#22d3ee"
-                                dot={false}
-                              />
-                              <Line
-                                yAxisId="right"
-                                type="monotone"
-                                dataKey="rt_A1"
-                                name="Runtime A1 (s)"
-                                stroke="#16a34a"
-                                dot={false}
-                              />
-                              <Line
-                                yAxisId="left"
-                                type="monotone"
-                                dataKey="to_A2"
-                                name="TAbre A2 (ms)"
-                                stroke="#f59e0b"
-                                dot={false}
-                              />
-                              <Line
-                                yAxisId="left"
-                                type="monotone"
-                                dataKey="tf_A2"
-                                name="TFecha A2 (ms)"
-                                stroke="#a855f7"
-                                dot={false}
-                              />
-                              <Line
-                                yAxisId="left"
-                                type="monotone"
-                                dataKey="tc_A2"
-                                name="TCiclo A2 (ms)"
-                                stroke="#ea580c"
-                                dot={false}
-                              />
-                              <Line
-                                yAxisId="right"
-                                type="monotone"
-                                dataKey="rt_A2"
-                                name="Runtime A2 (s)"
-                                stroke="#10b981"
-                                dot={false}
-                              />
-                            </>
-                          )}
-                        </LineChart>
-                      )}
-                    </ChartContainer>
-                  </div>
-                </TabsContent>
-              </Tabs>
-            </CardContent>
-          </Card>
-        </div>
+                        {/* vib_x_close */}
+                        {metricChoice === "vib_x_close" && (
+                          <>
+                            <Line yAxisId="left" type="monotone" dataKey="vib_A1" name="Vib A1" stroke="#4f46e5" dot={false} />
+                            <Line yAxisId="left" type="monotone" dataKey="vib_A2" name="Vib A2" stroke="#16a34a" dot={false} />
+                            <Line yAxisId="right" type="monotone" dataKey="tf_A1" name="TFecha A1 (ms)" stroke="#0ea5e9" dot={false} />
+                            <Line yAxisId="right" type="monotone" dataKey="tf_A2" name="TFecha A2 (ms)" stroke="#f59e0b" dot={false} />
+                          </>
+                        )}
+
+                        {/* vib_x_runtime */}
+                        {metricChoice === "vib_x_runtime" && (
+                          <>
+                            <Line yAxisId="left" type="monotone" dataKey="vib_A1" name="Vib A1" stroke="#4f46e5" dot={false} />
+                            <Line yAxisId="left" type="monotone" dataKey="vib_A2" name="Vib A2" stroke="#16a34a" dot={false} />
+                            <Line yAxisId="right" type="monotone" dataKey="rt_A1" name="Runtime A1 (s)" stroke="#0ea5e9" dot={false} />
+                            <Line yAxisId="right" type="monotone" dataKey="rt_A2" name="Runtime A2 (s)" stroke="#f59e0b" dot={false} />
+                          </>
+                        )}
+
+                        {/* times_x_runtime */}
+                        {metricChoice === "times_x_runtime" && (
+                          <>
+                            <Line yAxisId="left" type="monotone" dataKey="to_A1" name="TAbre A1 (ms)" stroke="#4f46e5" dot={false} />
+                            <Line yAxisId="left" type="monotone" dataKey="tf_A1" name="TFecha A1 (ms)" stroke="#0ea5e9" dot={false} />
+                            <Line yAxisId="left" type="monotone" dataKey="tc_A1" name="TCiclo A1 (ms)" stroke="#22d3ee" dot={false} />
+                            <Line yAxisId="right" type="monotone" dataKey="rt_A1" name="Runtime A1 (s)" stroke="#16a34a" dot={false} />
+                            <Line yAxisId="left" type="monotone" dataKey="to_A2" name="TAbre A2 (ms)" stroke="#f59e0b" dot={false} />
+                            <Line yAxisId="left" type="monotone" dataKey="tf_A2" name="TFecha A2 (ms)" stroke="#a855f7" dot={false} />
+                            <Line yAxisId="left" type="monotone" dataKey="tc_A2" name="TCiclo A2 (ms)" stroke="#ea580c" dot={false} />
+                            <Line yAxisId="right" type="monotone" dataKey="rt_A2" name="Runtime A2 (s)" stroke="#10b981" dot={false} />
+                          </>
+                        )}
+                      </LineChart>
+                    )}
+                  </ChartContainer>
+                </div>
+              </TabsContent>
+            </Tabs>
+          </CardContent>
+        </Card>
       </div>
-    </Layout>
+    </div>
   );
 };
 

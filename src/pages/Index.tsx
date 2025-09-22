@@ -1,3 +1,4 @@
+// src/pages/Index.tsx
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useLocation } from 'react-router-dom';
@@ -41,10 +42,10 @@ const Index = () => {
       <div className="flex flex-1">
         <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
+        {/* ⚠️ Removido lg:pl-64 para evitar deslocamento extra no desktop */}
         <LiveProvider>
           <ActuatorSelectionProvider>
-            {/* padding-top = altura do header fixo (64px); padding-left = largura do sidebar em ≥ lg */}
-            <main className="flex-1 pt-16 lg:pl-64 overflow-y-auto">
+            <main className="flex-1 pt-16 overflow-y-auto">
               <div className="mx-auto w-full max-w-screen-2xl px-6 md:px-8 pb-12">
                 <header className="mb-6">
                   <h1 className="text-3xl md:text-4xl font-extrabold leading-tight text-slate-100">
