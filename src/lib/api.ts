@@ -1,4 +1,4 @@
-// src/lib/api.ts
+// src/lib/api.ts (1/2)
 export type OPCFacet = "S1" | "S2" | "V_AVANCO" | "V_RECUO" | "INICIA" | "PARA";
 
 export type ActuatorLiveItem = {
@@ -24,20 +24,45 @@ export type MPUDataRaw = {
   temp_c?: number;
 };
 
+// ---------- Base / Fetch helpers ----------
 function getApiBase(): string {
-  const env = import.meta.env?.VITE_API_BASE as string | undefined;
-  if (env && /^https?:\/\//i.test(env)) return env.replace(/\/+$/, "");
+  // aceita múltiplas chaves por compat (VITE_API_BASE preferida)
+  const envs = [
+    (import.meta as any)?.env?.VITE_API_BASE,
+    (import.meta as any)?.env?.VITE_API_URL,
+    (import.meta as any)?.env?.VITE_API,
+  ].filter(Boolean) as string[];
+
+  const raw = envs.find((u) => /^https?:\/\//i.test(u)) || envs[0];
+  if (raw) return String(raw).replace(/\/+$/, "");
+
+  // fallback: mesmo host, porta 8000
   return `${window.location.protocol}//${window.location.hostname}:8000`;
 }
 
-async function fetchJson<T>(path: string, opts: RequestInit = {}): Promise<T> {
-  const url = `${getApiBase()}${path}`;
-  const res = await fetch(url, {
-    ...opts,
-    headers: { Accept: "application/json", ...(opts.headers || {}) },
-  });
-  if (!res.ok) throw new Error(`API ${res.status} ${res.statusText} on ${url}`);
-  return (await res.json()) as T;
+type FetchOpts = RequestInit & { timeoutMs?: number; absolute?: boolean };
+
+async function fetchJson<T>(path: string, opts: FetchOpts = {}): Promise<T> {
+  const { timeoutMs = 15000, absolute = false, ...init } = opts;
+  const url = absolute ? path : `${getApiBase()}${path}`;
+
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(url, {
+      ...init,
+      headers: { Accept: "application/json", ...(init.headers || {}) },
+      signal: ctl.signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`API ${res.status} ${res.statusText} on ${url} :: ${text.slice(0, 200)}`);
+    }
+    return (await res.json()) as T;
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 // ---------- Health ----------
@@ -65,6 +90,7 @@ export async function getLiveActuatorsState(): Promise<ActuatorsLiveResponse> {
 
 // ---------- OPC ----------
 type OPCHistoryRow = { ts_utc?: string; ts?: string; value?: number | string; value_bool?: boolean; value_num?: number };
+export type OPCHistory = Array<{ ts: string; value: number }>;
 
 function composeOpcName(actuatorId: number, facet: OPCFacet): string {
   if (facet === "S1") return `Recuado_${actuatorId}S1`;
@@ -73,12 +99,12 @@ function composeOpcName(actuatorId: number, facet: OPCFacet): string {
 }
 
 function normalizeOpcHistItem(rec: OPCHistoryRow): { ts: string; value: number } {
-  const ts = (rec.ts_utc ?? rec.ts) as string;
+  const ts = String(rec.ts_utc ?? rec.ts ?? new Date().toISOString());
   let v = 0;
   if (rec.value_bool !== undefined) v = rec.value_bool ? 1 : 0;
   else if (rec.value !== undefined) v = Number(rec.value);
   else if (rec.value_num !== undefined) v = Number(rec.value_num);
-  return { ts, value: v };
+  return { ts, value: Number.isFinite(v) ? v : 0 };
 }
 
 export async function getOPCLatest(
@@ -108,7 +134,7 @@ export async function getOPCHistory(opts: {
   since: string;
   limit?: number;
   asc?: boolean;
-}): Promise<Array<{ ts: string; value: number }>> {
+}): Promise<OPCHistory> {
   const { actuatorId, facet, since, limit = 1000, asc = false } = opts;
   const name = composeOpcName(actuatorId, facet);
   const params = new URLSearchParams();
@@ -122,6 +148,7 @@ export async function getOPCHistory(opts: {
   const rows = Array.isArray(raw) ? raw : raw.items;
   return rows.map(normalizeOpcHistItem);
 }
+// src/lib/api.ts (2/2)
 
 // ---------- MPU ----------
 export async function getMpuIds(): Promise<string[]> {
@@ -170,11 +197,9 @@ export async function getMinuteAgg(
   return fetchJson<MinuteAggRow[]>(`/metrics/minute-agg?${params.toString()}`);
 }
 
-// --- Monitoring-only endpoints ---
+// --- Monitoring-only endpoints (padronizados em getApiBase) ---
 export async function getRuntime(): Promise<{ runtime_seconds: number; since: string | null }> {
-  const res = await fetch(`${import.meta.env.VITE_API_BASE}/api/live/runtime`);
-  if (!res.ok) throw new Error(`runtime: ${res.status}`);
-  return res.json();
+  return fetchJson<{ runtime_seconds: number; since: string | null }>(`/api/live/runtime`);
 }
 
 type TimingRow = {
@@ -186,9 +211,7 @@ type TimingRow = {
 export type ActuatorTimings = { actuator_id: number; last: TimingRow };
 
 export async function getActuatorTimings(): Promise<{ actuators: ActuatorTimings[] }> {
-  const res = await fetch(`${import.meta.env.VITE_API_BASE}/api/live/actuators/timings`);
-  if (!res.ok) throw new Error(`timings: ${res.status}`);
-  return res.json();
+  return fetchJson<{ actuators: ActuatorTimings[] }>(`/api/live/actuators/timings`);
 }
 
 // CPM por atuador (A1/A2)
@@ -200,13 +223,13 @@ export async function getCpmByActuator(
     actuator_id: String(actuatorId),
     window_s: String(windowSeconds),
   });
-  const res = await fetch(`${import.meta.env.VITE_API_BASE}/api/live/cycles/rate_by_actuator?${qs}`);
-  if (!res.ok) throw new Error(`cpm_by_actuator: ${res.status}`);
-  return res.json();
+  return fetchJson<{ actuator_id: number; window_seconds: number; cycles: number; cpm: number }>(
+    `/api/live/cycles/rate_by_actuator?${qs.toString()}`
+  );
 }
 
-export async function getVibration(window_s: number = 2) {
-  const res = await fetch(`/api/live/vibration?window_s=${window_s}`);
-  if (!res.ok) throw new Error("Erro ao buscar vibração");
-  return res.json();
+// Vibração (janela móvel simples)
+export async function getVibration(window_s: number = 2): Promise<any> {
+  const params = new URLSearchParams({ window_s: String(window_s) });
+  return fetchJson<any>(`/api/live/vibration?${params.toString()}`);
 }

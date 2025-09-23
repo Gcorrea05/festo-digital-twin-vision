@@ -1,3 +1,4 @@
+// src/components/dashboard/ProductionStats.tsx (1/2) — imports, tipos, utils, efeitos
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer,
@@ -27,6 +28,19 @@ function toMs(rec: any): number {
 }
 const toMinuteKey = (d: Date) =>
   d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+
+// Paleta (mantendo consistência com o restante do app)
+const COLORS = {
+  indigo: "#4f46e5",
+  sky: "#0ea5e9",
+  emerald: "#10b981",
+  blue: "#2563eb",
+  green: "#16a34a",
+  amber: "#f59e0b",
+  orange: "#ea580c",
+  red: "#ef4444",
+  cyan: "#22d3ee",
+};
 
 export default function ProductionStats() {
   // ---- Atuador selecionável (AT1/AT2) ----
@@ -74,13 +88,10 @@ export default function ProductionStats() {
     const now = Date.now();
     const start = now - 60 * 60 * 1000;
     const buckets = new Map<string, number>(); // minute -> count
-
-    // pré-cria minutos (0)
     for (let i = 59; i >= 0; i--) {
       const t = new Date(now - i * 60000);
       buckets.set(toMinuteKey(t), 0);
     }
-
     for (let i = 1; i < hist.length; i++) {
       const prev = toNumValue(hist[i - 1]);
       const curr = toNumValue(hist[i]);
@@ -92,7 +103,6 @@ export default function ProductionStats() {
         }
       }
     }
-
     setCpmSeries(Array.from(buckets.entries()).map(([t, cpm]) => ({ t, cpm })));
   }
 
@@ -162,6 +172,7 @@ export default function ProductionStats() {
       { name: "TRANSIÇÃO", value: Math.round((accTran / total) * 100) },
     ]);
   }
+
   // ---- Efeitos: carga inicial e quando troca atuador ----
   useEffect(() => {
     loadWeek(actuatorId);
@@ -170,7 +181,7 @@ export default function ProductionStats() {
     loadOccupancy(actuatorId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actuatorId]);
-
+// src/components/dashboard/ProductionStats.tsx (2/2) — stream, CSV, UI responsiva
   // ---- Efeito: stream -> atualizações em tempo real ----
   useEffect(() => {
     if (last?.value_bool === true) {
@@ -183,20 +194,23 @@ export default function ProductionStats() {
         const idx = copy.findIndex((p) => p.t === minKey);
         if (idx >= 0) copy[idx] = { ...copy[idx], cpm: copy[idx].cpm + 1 };
         else copy.push({ t: minKey, cpm: 1 });
+        // mantém ordenado por HH:MM (opcional) e limita 60
         return copy.slice(-60);
       });
 
       // 2) incrementa produção de "hoje" (semana)
       setWeek((old) => {
         const todayName = now.toLocaleDateString(undefined, { weekday: "short" });
-        return old.map((d) => d.name === todayName ? { ...d, production: d.production + 1 } : d);
+        return old.map((d) => (d.name === todayName ? { ...d, production: d.production + 1 } : d));
       });
 
       // 3) tempo de ciclo
       const tsNow = now.getTime();
       if (lastRiseTsRef.current) {
         const dt = (tsNow - lastRiseTsRef.current) / 1000;
-        setCycleSeries((old) => [...old, { idx: (old[old.length - 1]?.idx ?? 0) + 1, seconds: dt }].slice(-120));
+        setCycleSeries((old) =>
+          [...old, { idx: (old[old.length - 1]?.idx ?? 0) + 1, seconds: dt }].slice(-120)
+        );
       }
       lastRiseTsRef.current = tsNow;
 
@@ -209,32 +223,47 @@ export default function ProductionStats() {
   function downloadCsv(filename: string, rows: any[], headers?: string[]) {
     const cols = headers ?? (rows.length ? Object.keys(rows[0]) : []);
     const escape = (v: any) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const csv = [cols.join(","), ...rows.map(r => cols.map(c => escape(r[c])).join(","))].join("\n");
+    const csv = [cols.join(","), ...rows.map((r) => cols.map((c) => escape(r[c])).join(","))].join(
+      "\n"
+    );
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = filename; a.click();
+    a.href = url;
+    a.download = filename;
+    a.click();
     URL.revokeObjectURL(url);
   }
 
-  const totalProducts = useMemo(() => week.reduce((s, d) => s + d.production, 0), [week]);
-  const totalDefects = useMemo(() => week.reduce((s, d) => s + d.rejects, 0), [week]);
-  const qualityPie: PieItem[] = useMemo(() => ([
-    { name: "Good Products", value: Math.max(0, totalProducts - totalDefects) },
-    { name: "Defective", value: totalDefects },
-  ]), [totalProducts, totalDefects]);
+  const totalProducts = useMemo(
+    () => week.reduce((s, d) => s + d.production, 0),
+    [week]
+  );
+  const totalDefects = useMemo(
+    () => week.reduce((s, d) => s + d.rejects, 0),
+    [week]
+  );
+  const qualityPie: PieItem[] = useMemo(
+    () => [
+      { name: "Good Products", value: Math.max(0, totalProducts - totalDefects) },
+      { name: "Defective", value: totalDefects },
+    ],
+    [totalProducts, totalDefects]
+  );
 
-  const pieColors = ["#22c55e", "#ef4444"];
-  const occColors = ["#2563eb", "#16a34a", "#f59e0b"];
+  const pieColors = [COLORS.emerald, COLORS.red];
+  const occColors = [COLORS.blue, COLORS.green, COLORS.amber];
 
   return (
     <Card className="col-span-full">
       <CardHeader className="pb-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <CardTitle>Production Statistics</CardTitle>
-          <CardDescription>Dados reais via OPC (S2/S1) + stream — selecione o atuador</CardDescription>
+          <CardDescription>
+            Dados reais via OPC (S2/S1) + stream — selecione o atuador
+          </CardDescription>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <label className="text-sm">Atuador:</label>
           <select
             className="border rounded-md px-2 py-1 bg-background"
@@ -250,65 +279,79 @@ export default function ProductionStats() {
           <Button variant="outline" onClick={() => downloadCsv(`cpm_AT${actuatorId}.csv`, cpmSeries)}>
             Export CPM CSV
           </Button>
-          <Button variant="outline" onClick={() => downloadCsv(`cycles_AT${actuatorId}.csv`, cycleSeries)}>
+          <Button
+            variant="outline"
+            onClick={() => downloadCsv(`cycles_AT${actuatorId}.csv`, cycleSeries)}
+          >
             Export Cycles CSV
           </Button>
-          <Button variant="outline" onClick={() => downloadCsv(`occupancy_AT${actuatorId}.csv`, occupancy)}>
+          <Button
+            variant="outline"
+            onClick={() => downloadCsv(`occupancy_AT${actuatorId}.csv`, occupancy)}
+          >
             Export Occupancy CSV
           </Button>
         </div>
       </CardHeader>
 
-      <CardContent className="grid grid-cols-1 2xl:grid-cols-2 gap-6">
+      <CardContent className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         {/* 1) Produção semanal */}
-        <div className="h-[300px]">
-          <h3 className="text-base font-medium mb-2">Weekly Production (AT{actuatorId}, S2 rises)</h3>
+        <div className="min-w-0 w-full h-64 sm:h-72 md:h-80 lg:h-[28rem]">
+          <h3 className="text-base font-medium mb-2">
+            Weekly Production (AT{actuatorId}, S2 rises)
+          </h3>
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={week} margin={{ top: 10, right: 20, left: 10, bottom: 20 }}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" />
+              <XAxis dataKey="name" interval="preserveStartEnd" minTickGap={12} tickMargin={8} />
               <YAxis />
               <Tooltip formatter={(v, n) => [`${v} units`, n === "production" ? "Production" : "Rejects"]} />
-              <Legend />
-              <Bar dataKey="production" name="Production" fill="#1EAEDB" />
-              <Bar dataKey="rejects" name="Defects" fill="#FF5722" />
+              <Legend wrapperStyle={{ display: "none" }} />
+              <Bar dataKey="production" name="Production" fill={COLORS.sky} />
+              <Bar dataKey="rejects" name="Defects" fill={COLORS.orange} />
             </BarChart>
           </ResponsiveContainer>
         </div>
 
         {/* 2) CPM por minuto (últimos 60 min) */}
-        <div className="h-[300px]">
+        <div className="min-w-0 w-full h-64 sm:h-72 md:h-80 lg:h-[28rem]">
           <h3 className="text-base font-medium mb-2">CPM (last 60 min) — AT{actuatorId}</h3>
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={cpmSeries}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="t" />
+              <XAxis dataKey="t" interval="preserveStartEnd" minTickGap={16} tickMargin={8} />
               <YAxis allowDecimals={false} />
               <Tooltip />
-              <Legend />
-              <Line type="monotone" dataKey="cpm" name="Cycles/min" stroke="#4f46e5" strokeWidth={2} dot={false} />
+              <div className="hidden sm:block">
+                <Legend />
+              </div>
+              <Line type="monotone" dataKey="cpm" name="Cycles/min" stroke={COLORS.indigo} strokeWidth={2} dot={false} />
             </LineChart>
           </ResponsiveContainer>
         </div>
 
         {/* 3) Tempo de ciclo (últimos N ciclos) */}
-        <div className="h-[300px]">
+        <div className="min-w-0 w-full h-64 sm:h-72 md:h-80 lg:h-[28rem]">
           <h3 className="text-base font-medium mb-2">Cycle Time (sec) — AT{actuatorId}</h3>
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={cycleSeries}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="idx" />
+              <XAxis dataKey="idx" interval="preserveStartEnd" minTickGap={12} tickMargin={8} />
               <YAxis />
               <Tooltip />
-              <Legend />
-              <Area type="monotone" dataKey="seconds" name="Cycle (s)" stroke="#10b981" fill="#10b981" />
+              <div className="hidden sm:block">
+                <Legend />
+              </div>
+              <Area type="monotone" dataKey="seconds" name="Cycle (s)" stroke={COLORS.emerald} fill={COLORS.emerald} />
             </AreaChart>
           </ResponsiveContainer>
         </div>
 
         {/* 4) Ocupação de estados (última 1h) */}
-        <div className="h-[300px]">
-          <h3 className="text-base font-medium mb-2">State Occupancy (last 1h) — AT{actuatorId}</h3>
+        <div className="min-w-0 w-full h-64 sm:h-72 md:h-80 lg:h-[28rem]">
+          <h3 className="text-base font-medium mb-2">
+            State Occupancy (last 1h) — AT{actuatorId}
+          </h3>
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie
@@ -319,16 +362,20 @@ export default function ProductionStats() {
                 dataKey="value"
                 label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
               >
-                {occupancy.map((_, i) => (<Cell key={i} fill={occColors[i % occColors.length]} />))}
+                {occupancy.map((_, i) => (
+                  <Cell key={i} fill={occColors[i % occColors.length]} />
+                ))}
               </Pie>
-              <Legend />
+              <div className="hidden sm:block">
+                <Legend />
+              </div>
               <Tooltip formatter={(v) => [`${v}%`, "Percent"]} />
             </PieChart>
           </ResponsiveContainer>
         </div>
 
         {/* 5) Quality pie (placeholder até termos rejects reais) */}
-        <div className="h-[300px] 2xl:col-span-2">
+        <div className="min-w-0 w-full h-64 sm:h-72 md:h-80 lg:h-[28rem] xl:col-span-2">
           <h3 className="text-base font-medium mb-2">Quality Overview</h3>
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
@@ -340,9 +387,13 @@ export default function ProductionStats() {
                 dataKey="value"
                 label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
               >
-                {qualityPie.map((_, i) => (<Cell key={i} fill={pieColors[i % pieColors.length]} />))}
+                {qualityPie.map((_, i) => (
+                  <Cell key={i} fill={pieColors[i % pieColors.length]} />
+                ))}
               </Pie>
-              <Legend />
+              <div className="hidden sm:block">
+                <Legend />
+              </div>
               <Tooltip formatter={(v) => [`${v} units`, ""]} />
             </PieChart>
           </ResponsiveContainer>

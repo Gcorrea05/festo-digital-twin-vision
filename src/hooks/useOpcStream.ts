@@ -1,5 +1,5 @@
-// src/hooks/useOpcStream.ts
-import { useEffect, useRef, useState } from "react";
+// src/hooks/useOpcStream.ts (refatorado)
+import { useCallback, useEffect, useRef, useState } from "react";
 import { openOpcWS, WSClient } from "@/lib/ws";
 
 export type OpcEvent = {
@@ -10,25 +10,38 @@ export type OpcEvent = {
   value_num?: number;
 };
 
-export function useOpcStream(opts?: { name?: string; all?: boolean }) {
+type Options = { name?: string; all?: boolean };
+
+export function useOpcStream(opts?: Options) {
   const [connected, setConnected] = useState(false);
   const [last, setLast] = useState<OpcEvent | null>(null);
+
+  // Dicionário com o último evento por sinal (mutável, não dispara render)
   const byNameRef = useRef<Record<string, OpcEvent>>({});
   const clientRef = useRef<WSClient | null>(null);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
-    // fecha conexão anterior
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    // encerra a conexão anterior se existir
     clientRef.current?.close();
 
     const client = openOpcWS({
-      all: opts?.all ?? (!opts?.name),
+      all: opts?.all ?? !opts?.name,
       name: opts?.name,
-      onOpen: () => setConnected(true),
-      onClose: () => setConnected(false),
-      onError: () => setConnected(false),
-      onMessage: (m) => {
-        // esperamos { type:"opc_event", ... }
-        if (m && m.type === "opc_event") {
+      onOpen: () => mountedRef.current && setConnected(true),
+      onClose: () => mountedRef.current && setConnected(false),
+      onError: () => mountedRef.current && setConnected(false),
+      onMessage: (m: unknown) => {
+        // esperamos { type: "opc_event", ... }
+        if (!mountedRef.current) return;
+        if (m && typeof m === "object" && (m as any).type === "opc_event") {
           const evt = m as OpcEvent;
           byNameRef.current[evt.name] = evt;
           setLast(evt);
@@ -37,14 +50,23 @@ export function useOpcStream(opts?: { name?: string; all?: boolean }) {
     });
 
     clientRef.current = client;
-    return () => client.close();
+
+    return () => {
+      // fecha e invalida referência
+      client.close();
+      clientRef.current = null;
+    };
     // reabre se name/all mudarem
   }, [opts?.name, opts?.all]);
+
+  // getter memorizado para evitar recriações desnecessárias
+  const getByName = useCallback((name: string) => {
+    return byNameRef.current[name] ?? null;
+  }, []);
 
   return {
     connected,
     last,
-    // acesso opcional ao dicionário por nome
-    getByName: (name: string) => byNameRef.current[name] || null,
+    getByName,
   };
 }

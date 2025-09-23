@@ -11,6 +11,21 @@ export type MpuSample = {
   temp_c: number;
 };
 
+// Normaliza registros vindos da API/WS (aceita *_g / *_dps)
+function normalizeMPU(m: any): MpuSample {
+  return {
+    ts: m?.ts_utc ?? m?.ts ?? new Date().toISOString(),
+    id: m?.id ?? "unknown",
+    ax: m?.ax ?? m?.ax_g ?? 0,
+    ay: m?.ay ?? m?.ay_g ?? 0,
+    az: m?.az ?? m?.az_g ?? 0,
+    gx: m?.gx ?? m?.gx_dps ?? 0,
+    gy: m?.gy ?? m?.gy_dps ?? 0,
+    gz: m?.gz ?? m?.gz_dps ?? 0,
+    temp_c: m?.temp_c ?? 0,
+  };
+}
+
 // ===== Hook: lista de IDs do MPU =====
 export function useMpuIds() {
   const [ids, setIds] = useState<string[]>([]);
@@ -18,11 +33,24 @@ export function useMpuIds() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setLoading(true);
-    getMpuIds()
-      .then((list) => { setIds(list); setError(null); })
-      .catch((e) => setError(e?.message ?? "Erro ao listar MPUs"))
-      .finally(() => setLoading(false));
+    let alive = true;
+    (async () => {
+      try {
+        setLoading(true);
+        const list = await getMpuIds();
+        if (!alive) return;
+        setIds(Array.isArray(list) ? list : []);
+        setError(null);
+      } catch (e: any) {
+        if (!alive) return;
+        setError(e?.message ?? "Erro ao listar MPUs");
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
   }, []);
 
   return { ids, loading, error };
@@ -38,29 +66,38 @@ export function useMpuHistory(
   const [rows, setRows] = useState<MpuSample[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const reqSeq = useRef(0);
 
   useEffect(() => {
-    if (!id) { setRows([]); setLoading(false); return; }
-    setLoading(true);
-    getMPUHistory({ id, since, limit, asc })
-      .then((r) => {
-        // normaliza possíveis chaves *_g e *_dps vindas da API
-        const norm = (r || []).map((m: any) => ({
-          ts: m.ts_utc ?? m.ts,
-          id: m.id,
-          ax: m.ax ?? m.ax_g ?? 0,
-          ay: m.ay ?? m.ay_g ?? 0,
-          az: m.az ?? m.az_g ?? 0,
-          gx: m.gx ?? m.gx_dps ?? 0,
-          gy: m.gy ?? m.gy_dps ?? 0,
-          gz: m.gz ?? m.gz_dps ?? 0,
-          temp_c: m.temp_c ?? 0,
-        })) as MpuSample[];
+    if (!id) {
+      setRows([]);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
+    const seq = ++reqSeq.current;
+    let alive = true;
+
+    (async () => {
+      try {
+        setLoading(true);
+        const r = await getMPUHistory({ id, since, limit, asc });
+        if (!alive || reqSeq.current !== seq) return;
+        const norm = (r || []).map(normalizeMPU);
         setRows(norm);
         setError(null);
-      })
-      .catch((e) => setError(e?.message ?? "Erro ao buscar histórico MPU"))
-      .finally(() => setLoading(false));
+      } catch (e: any) {
+        if (!alive || reqSeq.current !== seq) return;
+        setError(e?.message ?? "Erro ao buscar histórico MPU");
+      } finally {
+        if (alive && reqSeq.current === seq) setLoading(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
   }, [id, since, limit, asc]);
 
   return { rows, loading, error };
@@ -71,28 +108,37 @@ export function useMpuLatest(id: string | null) {
   const [sample, setSample] = useState<MpuSample | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const reqSeq = useRef(0);
 
   useEffect(() => {
-    if (!id) { setSample(null); setLoading(false); return; }
-    setLoading(true);
-    getLatestMPU(id)
-      .then((m) => {
-        const s: MpuSample = {
-          ts: m.ts_utc ?? m.ts ?? new Date().toISOString(),
-          id: m.id,
-          ax: m.ax ?? m.ax_g ?? 0,
-          ay: m.ay ?? m.ay_g ?? 0,
-          az: m.az ?? m.az_g ?? 0,
-          gx: m.gx ?? m.gx_dps ?? 0,
-          gy: m.gy ?? m.gy_dps ?? 0,
-          gz: m.gz ?? m.gz_dps ?? 0,
-          temp_c: m.temp_c ?? 0,
-        };
-        setSample(s);
+    if (!id) {
+      setSample(null);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
+    const seq = ++reqSeq.current;
+    let alive = true;
+
+    (async () => {
+      try {
+        setLoading(true);
+        const m = await getLatestMPU(id);
+        if (!alive || reqSeq.current !== seq) return;
+        setSample(normalizeMPU(m));
         setError(null);
-      })
-      .catch((e) => setError(e?.message ?? "Erro ao buscar último MPU"))
-      .finally(() => setLoading(false));
+      } catch (e: any) {
+        if (!alive || reqSeq.current !== seq) return;
+        setError(e?.message ?? "Erro ao buscar último MPU");
+      } finally {
+        if (alive && reqSeq.current === seq) setLoading(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
   }, [id]);
 
   return { sample, loading, error };
@@ -110,31 +156,21 @@ export function useMpuStream(opts?: { id?: string; all?: boolean }) {
 
     const client = openMpuWS({
       id: opts?.id,
-      all: opts?.all ?? (!opts?.id),
+      all: opts?.all ?? !opts?.id,
       onOpen: () => setConnected(true),
       onClose: () => setConnected(false),
       onError: () => setConnected(false),
       onMessage: (m: any) => {
         // normaliza registro vindo do WS (ax_g/gx_dps → ax/gx, etc.)
-        if (m?.id && (m.ax_g !== undefined || m.ax !== undefined)) {
-          const s: MpuSample = {
-            ts: m.ts_utc ?? m.ts ?? new Date().toISOString(),
-            id: m.id,
-            ax: m.ax ?? m.ax_g ?? 0,
-            ay: m.ay ?? m.ay_g ?? 0,
-            az: m.az ?? m.az_g ?? 0,
-            gx: m.gx ?? m.gx_dps ?? 0,
-            gy: m.gy ?? m.gy_dps ?? 0,
-            gz: m.gz ?? m.gz_dps ?? 0,
-            temp_c: m.temp_c ?? 0,
-          };
-          setLast(s);
+        if (m?.id && (m.ax !== undefined || m.ax_g !== undefined)) {
+          setLast(normalizeMPU(m));
         }
       },
     });
 
     clientRef.current = client;
     return () => client.close();
+    // mudar id/all reinicia a conexão
   }, [opts?.id, opts?.all]);
 
   return { connected, last };
