@@ -31,7 +31,7 @@ const App = () => (
                 element={
                   <Layout
                     title="Dashboard"
-                    description="Visão geral do sistema e métricas em tempo real."
+                    description=""
                   >
                     <Index />
                   </Layout>
@@ -42,7 +42,7 @@ const App = () => (
                 element={
                   <Layout
                     title="Monitoring"
-                    description="Monitoramento ao vivo dos atuadores e sensores."
+                    description=""
                   >
                     <Monitoring />
                   </Layout>
@@ -53,7 +53,7 @@ const App = () => (
                 element={
                   <Layout
                     title="Analytics"
-                    description="Análises históricas, correlações e KPIs."
+                    description=""
                   >
                     <Analytics />
                   </Layout>
@@ -64,7 +64,7 @@ const App = () => (
                 element={
                   <Layout
                     title="Alerts"
-                    description="Alertas, eventos e notificações do sistema."
+                    description=""
                   >
                     <Alerts />
                   </Layout>
@@ -75,7 +75,7 @@ const App = () => (
                 element={
                   <Layout
                     title="Simulation"
-                    description="Simulação de ciclos, estados e cenários controlados."
+                    description=""
                   >
                     <Simulation />
                   </Layout>
@@ -87,7 +87,7 @@ const App = () => (
                 element={
                   <Layout
                     title="Página não encontrada"
-                    description="A rota acessada não existe."
+                    description=""
                   >
                     <NotFound />
                   </Layout>
