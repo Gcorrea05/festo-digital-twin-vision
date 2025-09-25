@@ -1,9 +1,8 @@
-// src/lib/ws.ts
-// Utilitários de WebSocket com reconexão exponencial + jitter
-// Endpoints suportados (existentes no backend):
-// - OPC:  ws(s)://<host>/ws/opc?name=<NOME>  |  /ws/opc?all=true
-// - MPU:  ws(s)://<host>/ws/mpu?id=<ID>      |  /ws/mpu?all=true
-// (mantemos openLiveWS para compatibilidade se você já usa em outro lugar)
+// src/lib/ws.ts  — FINAL (alinhado ao backend)
+// WS RAIZ: /ws/opc, /ws/mpu
+// WS com prefixo (snapshot): /api/ws/snapshot
+
+import { getApiBase } from "./api";
 
 export type LiveMessage = { type: "snapshot"; data: any } | any;
 
@@ -14,37 +13,33 @@ type WSHandlers = {
   onClose?: (e: CloseEvent) => void;
   onReconnect?: (attempt: number, delayMs: number) => void;
 };
-
 export type WSClient = { close: () => void; isConnected: () => boolean };
 
-// -------- helpers --------
-function getHttpBase(): string {
-  const base = (import.meta as any).env?.VITE_API_BASE as string | undefined;
-  if (base && /^https?:\/\//i.test(base)) return base.replace(/\/+$/, "");
-  return "http://127.0.0.1:8000";
+// --- helpers ---
+function wsUrlRoot(path: string): string {
+  const base = getApiBase();              // http://127.0.0.1:8000
+  const u = new URL(base);
+  const proto = u.protocol === "https:" ? "wss:" : "ws:";
+  const right = path.startsWith("/") ? path : `/${path}`;
+  return `${proto}//${u.host}${right}`;   // ws://127.0.0.1:8000/...
 }
-function toWsUrl(path: string): string {
-  // Em DEV, conecta direto no backend (evita proxy do Vite no Windows)
-  if (import.meta.env.DEV) {
-    const http = getHttpBase();
-    const u = new URL(http);
-    const proto = u.protocol === "https:" ? "wss" : "ws";
-    return `${proto}://${u.host}${path}`;
-  }
-  // Em PROD, mesma origem
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  return `${proto}://${location.host}${path}`;
+function wsUrlApi(path: string): string {
+  // apenas para o snapshot que o backend expõe em /api/ws/snapshot
+  const base = getApiBase();
+  const u = new URL(base);
+  const proto = u.protocol === "https:" ? "wss:" : "ws:";
+  const right = path.startsWith("/") ? path : `/${path}`;
+  return `${proto}//${u.host}/api${right}`;
 }
 
-function openWS(path: string, h: WSHandlers = {}): WSClient {
+function openWS(absUrl: string, h: WSHandlers = {}): WSClient {
   let ws: WebSocket | null = null;
   let connected = false;
   let attempt = 0;
   let closedByUser = false;
   let timer: number | undefined;
 
-  const url = toWsUrl(path);
-  if (import.meta.env.DEV) console.info("[WS] target:", url);
+  if (import.meta.env.DEV) console.info("[WS] target:", absUrl);
 
   const schedule = () => {
     if (closedByUser) return;
@@ -55,65 +50,35 @@ function openWS(path: string, h: WSHandlers = {}): WSClient {
     h.onReconnect?.(attempt, delay);
     timer = window.setTimeout(connect, delay) as unknown as number;
   };
-  const clear = () => {
-    if (timer) window.clearTimeout(timer);
-    timer = undefined;
-  };
+  const clear = () => { if (timer) window.clearTimeout(timer); timer = undefined; };
 
   const connect = () => {
     clear();
-    try {
-      ws = new WebSocket(url);
-    } catch (e) {
-      if (import.meta.env.DEV) console.warn("[WS] ctor error", e);
-      schedule();
-      return;
-    }
-    ws.onopen = (ev) => {
-      connected = true;
-      attempt = 0;
-      h.onOpen?.(ev);
-    };
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data);
-        h.onMessage?.(msg);
-      } catch {
-        // ignora payloads não-JSON
-      }
-    };
+    try { ws = new WebSocket(absUrl); }
+    catch (e) { if (import.meta.env.DEV) console.warn("[WS] ctor error", e); schedule(); return; }
+
+    ws.onopen = (ev) => { connected = true; attempt = 0; h.onOpen?.(ev); };
+    ws.onmessage = (ev) => { try { h.onMessage?.(JSON.parse(ev.data)); } catch {} };
     ws.onerror = (ev) => h.onError?.(ev);
-    ws.onclose = (ev) => {
-      connected = false;
-      h.onClose?.(ev);
-      if (import.meta.env.DEV) console.warn("[WS] closed", ev.code, ev.reason || "(no reason)");
-      clear();
-      schedule();
-    };
+    ws.onclose = (ev) => { connected = false; h.onClose?.(ev); if (import.meta.env.DEV) console.warn("[WS] closed", ev.code, ev.reason || "(no reason)"); clear(); schedule(); };
   };
 
   connect();
-
   return {
-    close: () => {
-      closedByUser = true;
-      try { ws?.close(); } catch {}
-      clear();
-    },
+    close: () => { closedByUser = true; try { ws?.close(); } catch {} clear(); },
     isConnected: () => connected,
   };
 }
 
-// -------- APIs específicas --------
-
+// --- APIs específicas ---
 // OPC: /ws/opc?name=<NOME>  ou  /ws/opc?all=true
 export function openOpcWS(opts?: { name?: string; all?: boolean } & WSHandlers): WSClient {
   const q: string[] = [];
   if (opts?.name) q.push(`name=${encodeURIComponent(opts.name)}`);
   if (opts?.all || (!opts?.name)) q.push("all=true");
-  const path = `/ws/opc?${q.join("&")}`;
+  const abs = wsUrlRoot(`/ws/opc?${q.join("&")}`);
   const { name, all, ...handlers } = opts || {};
-  return openWS(path, handlers);
+  return openWS(abs, handlers);
 }
 
 // MPU: /ws/mpu?id=<ID>  ou  /ws/mpu?all=true
@@ -121,15 +86,13 @@ export function openMpuWS(opts?: { id?: string; all?: boolean } & WSHandlers): W
   const q: string[] = [];
   if (opts?.id) q.push(`id=${encodeURIComponent(opts.id)}`);
   if (opts?.all || (!opts?.id)) q.push("all=true");
-  const path = `/ws/mpu?${q.join("&")}`;
+  const abs = wsUrlRoot(`/ws/mpu?${q.join("&")}`);
   const { id, all, ...handlers } = opts || {};
-  return openWS(path, handlers);
+  return openWS(abs, handlers);
 }
-// (Opcional/legado) Live snapshot se você ainda usa em algum lugar.
-// Ajuste a rota se seu backend NÃO tiver /api/ws/snapshot.
+
+// Snapshot (se usar): /api/ws/snapshot
 export function openLiveWS(h: WSHandlers = {}): WSClient {
-  // Se a sua API não tem esse endpoint, você pode remover
-  // ou trocar por outro path. Mantive por compatibilidade.
-  const path = "/api/ws/snapshot";
-  return openWS(path, h);
+  const abs = wsUrlApi("/ws/snapshot");
+  return openWS(abs, h);
 }

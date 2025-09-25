@@ -1,4 +1,5 @@
-// src/lib/api.ts (1/2)
+// src/lib/api.ts — FINAL (misto: raiz + /api para /live/*)
+
 export type OPCFacet = "S1" | "S2" | "V_AVANCO" | "V_RECUO" | "INICIA" | "PARA";
 
 export type ActuatorLiveItem = {
@@ -8,10 +9,7 @@ export type ActuatorLiveItem = {
   recuado: 0 | 1;
   avancado: 0 | 1;
 };
-
-export type ActuatorsLiveResponse = {
-  actuators: ActuatorLiveItem[];
-};
+export type ActuatorsLiveResponse = { actuators: ActuatorLiveItem[] };
 
 export type MPUDataRaw = {
   ts_utc?: string;
@@ -24,52 +22,65 @@ export type MPUDataRaw = {
   temp_c?: number;
 };
 
-// ---------- Base / Fetch helpers ----------
-function getApiBase(): string {
-  // aceita múltiplas chaves por compat (VITE_API_BASE preferida)
+// ---------------- Base helpers ----------------
+function normalizeBase(u?: string): string | undefined {
+  if (!u) return undefined;
+  const s = String(u).trim().replace(/\/+$/, "");
+  return /^https?:\/\//i.test(s) ? s : undefined;
+}
+
+export function getApiBase(): string {
   const envs = [
     (import.meta as any)?.env?.VITE_API_BASE,
     (import.meta as any)?.env?.VITE_API_URL,
     (import.meta as any)?.env?.VITE_API,
-  ].filter(Boolean) as string[];
-
-  const raw = envs.find((u) => /^https?:\/\//i.test(u)) || envs[0];
-  if (raw) return String(raw).replace(/\/+$/, "");
-
-  // fallback: mesmo host, porta 8000
+  ].map(normalizeBase).filter(Boolean) as string[];
+  if (envs.length) return envs[0];
   return `${window.location.protocol}//${window.location.hostname}:8000`;
+}
+
+// URLs HTTP
+function root(path: string) {
+  const base = getApiBase();
+  const right = path.startsWith("/") ? path : `/${path}`;
+  return `${base}${right}`;
+}
+function api(path: string) {
+  const base = getApiBase();
+  const right = path.startsWith("/") ? path : `/${path}`;
+  return `${base}/api${right}`;
 }
 
 type FetchOpts = RequestInit & { timeoutMs?: number; absolute?: boolean };
 
-async function fetchJson<T>(path: string, opts: FetchOpts = {}): Promise<T> {
+async function fetchJson<T>(urlOrPath: string, opts: FetchOpts = {}): Promise<T> {
   const { timeoutMs = 15000, absolute = false, ...init } = opts;
-  const url = absolute ? path : `${getApiBase()}${path}`;
+  const url = absolute ? urlOrPath : root(urlOrPath);
 
   const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  const t = window.setTimeout(() => ctl.abort(), timeoutMs);
 
   try {
     const res = await fetch(url, {
+      cache: "no-store",
       ...init,
       headers: { Accept: "application/json", ...(init.headers || {}) },
       signal: ctl.signal,
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`API ${res.status} ${res.statusText} on ${url} :: ${text.slice(0, 200)}`);
+      throw new Error(`API ${res.status} ${res.statusText} on ${res.url} :: ${text.slice(0, 200)}`);
     }
     return (await res.json()) as T;
   } finally {
-    clearTimeout(t);
+    window.clearTimeout(t);
   }
 }
 
-// ---------- Health ----------
+// -------------- Health / System (RAIZ) --------------
 export async function getHealth(): Promise<{ status: string }> {
   return fetchJson<{ status: string }>("/health");
 }
-
 export async function getSystem(): Promise<{ mode: string; severity: string; ts: number }> {
   try {
     const h = await getHealth();
@@ -83,12 +94,39 @@ export async function getSystem(): Promise<{ mode: string; severity: string; ts:
   }
 }
 
-// ---------- Actuators ----------
+// -------------- Actuators (HTTP, /api/live/*) --------------
 export async function getLiveActuatorsState(): Promise<ActuatorsLiveResponse> {
-  return fetchJson<ActuatorsLiveResponse>("/api/live/actuators/state");
+  const url = api("/live/actuators/state");
+  return fetchJson<ActuatorsLiveResponse>(url, { absolute: true });
 }
 
-// ---------- OPC ----------
+type TimingRow = {
+  ts_utc: string | null;
+  dt_abre_s: number | null;
+  dt_fecha_s: number | null;
+  dt_ciclo_s: number | null;
+};
+export type ActuatorTimings = { actuator_id: number; last: TimingRow };
+
+export async function getRuntime(): Promise<{ runtime_seconds: number; since: string | null }> {
+  return fetchJson(api("/live/runtime"), { absolute: true });
+}
+export async function getActuatorTimings(): Promise<{ actuators: ActuatorTimings[] }> {
+  return fetchJson<{ actuators: ActuatorTimings[] }>(api("/live/actuators/timings"), { absolute: true });
+}
+export async function getCpmByActuator(
+  actuatorId: 1 | 2,
+  windowSeconds = 60
+): Promise<{ actuator_id: number; window_seconds: number; cycles: number; cpm: number }> {
+  const qs = new URLSearchParams({ actuator_id: String(actuatorId), window_s: String(windowSeconds) });
+  return fetchJson(api(`/live/cycles/rate_by_actuator?${qs.toString()}`), { absolute: true });
+}
+export async function getVibration(window_s: number = 2): Promise<any> {
+  const params = new URLSearchParams({ window_s: String(window_s) });
+  return fetchJson<any>(api(`/live/vibration?${params.toString()}`), { absolute: true });
+}
+
+// -------------- OPC (HTTP, RAIZ) --------------
 type OPCHistoryRow = { ts_utc?: string; ts?: string; value?: number | string; value_bool?: boolean; value_num?: number };
 export type OPCHistory = Array<{ ts: string; value: number }>;
 
@@ -97,7 +135,6 @@ function composeOpcName(actuatorId: number, facet: OPCFacet): string {
   if (facet === "S2") return `Avancado_${actuatorId}S2`;
   return facet;
 }
-
 function normalizeOpcHistItem(rec: OPCHistoryRow): { ts: string; value: number } {
   const ts = String(rec.ts_utc ?? rec.ts ?? new Date().toISOString());
   let v = 0;
@@ -115,13 +152,9 @@ export async function getOPCLatest(
   await Promise.all(
     facets.map(async (f) => {
       const name = composeOpcName(actuatorId, f);
-      const item = await fetchJson<{ value_bool?: boolean; value?: number | string }>(
-        `/opc/latest?name=${encodeURIComponent(name)}`
-      );
-      const v =
-        item?.value_bool !== undefined
-          ? (item.value_bool ? 1 : 0)
-          : Number(item?.value ?? 0);
+      const url = root(`/opc/latest?name=${encodeURIComponent(name)}`);
+      const item = await fetchJson<{ value_bool?: boolean; value?: number | string }>(url, { absolute: true });
+      const v = item?.value_bool !== undefined ? (item.value_bool ? 1 : 0) : Number(item?.value ?? 0);
       out[f] = v ? 1 : 0;
     })
   );
@@ -129,11 +162,7 @@ export async function getOPCLatest(
 }
 
 export async function getOPCHistory(opts: {
-  actuatorId: number;
-  facet: OPCFacet;
-  since: string;
-  limit?: number;
-  asc?: boolean;
+  actuatorId: number; facet: OPCFacet; since: string; limit?: number; asc?: boolean;
 }): Promise<OPCHistory> {
   const { actuatorId, facet, since, limit = 1000, asc = false } = opts;
   const name = composeOpcName(actuatorId, facet);
@@ -142,41 +171,30 @@ export async function getOPCHistory(opts: {
   if (since) params.set("since", since);
   if (limit) params.set("limit", String(limit));
   if (asc) params.set("asc", "true");
-  const raw = await fetchJson<OPCHistoryRow[] | { items: OPCHistoryRow[] }>(
-    `/opc/history?${params.toString()}`
-  );
+  const url = root(`/opc/history?${params.toString()}`);
+  const raw = await fetchJson<OPCHistoryRow[] | { items: OPCHistoryRow[] }>(url, { absolute: true });
   const rows = Array.isArray(raw) ? raw : raw.items;
   return rows.map(normalizeOpcHistItem);
 }
-// src/lib/api.ts (2/2)
 
-// ---------- MPU ----------
+// -------------- MPU (HTTP, RAIZ) --------------
 export async function getMpuIds(): Promise<string[]> {
   return fetchJson<string[]>("/mpu/ids");
 }
-
 export async function getLatestMPU(id: string): Promise<MPUDataRaw> {
-  const params = new URLSearchParams();
-  params.set("id", id);
+  const params = new URLSearchParams({ id });
   return fetchJson<MPUDataRaw>(`/mpu/latest?${params.toString()}`);
 }
-
 export async function getMPUHistory(opts: {
-  id: string;
-  since?: string;
-  limit?: number;
-  asc?: boolean;
+  id: string; since?: string; limit?: number; asc?: boolean;
 }): Promise<MPUDataRaw[]> {
   const { id, since, limit = 1000, asc = true } = opts;
-  const params = new URLSearchParams();
-  params.set("id", id);
+  const params = new URLSearchParams({ id, limit: String(limit), asc: asc ? "true" : "false" });
   if (since) params.set("since", since);
-  if (limit) params.set("limit", String(limit));
-  params.set("asc", asc ? "true" : "false");
   return fetchJson<MPUDataRaw[]>(`/mpu/history?${params.toString()}`);
 }
 
-// ---------- MÉTRICAS ----------
+// -------------- Métricas (HTTP, RAIZ) --------------
 export type MinuteAggRow = {
   minute: string;
   t_open_ms_avg: number | null;
@@ -186,50 +204,10 @@ export type MinuteAggRow = {
   cpm: number;
   vib_avg?: number | null;
 };
-
-export async function getMinuteAgg(
-  act: "A1" | "A2",
-  since = "-60m"
-): Promise<MinuteAggRow[]> {
-  const params = new URLSearchParams();
-  params.set("act", act);
-  if (since) params.set("since", since);
+export async function getMinuteAgg(act: "A1" | "A2", since = "-60m"): Promise<MinuteAggRow[]> {
+  const params = new URLSearchParams({ act, since });
   return fetchJson<MinuteAggRow[]>(`/metrics/minute-agg?${params.toString()}`);
 }
 
-// --- Monitoring-only endpoints (padronizados em getApiBase) ---
-export async function getRuntime(): Promise<{ runtime_seconds: number; since: string | null }> {
-  return fetchJson<{ runtime_seconds: number; since: string | null }>(`/api/live/runtime`);
-}
-
-type TimingRow = {
-  ts_utc: string | null;
-  dt_abre_s: number | null;
-  dt_fecha_s: number | null;
-  dt_ciclo_s: number | null;
-};
-export type ActuatorTimings = { actuator_id: number; last: TimingRow };
-
-export async function getActuatorTimings(): Promise<{ actuators: ActuatorTimings[] }> {
-  return fetchJson<{ actuators: ActuatorTimings[] }>(`/api/live/actuators/timings`);
-}
-
-// CPM por atuador (A1/A2)
-export async function getCpmByActuator(
-  actuatorId: 1 | 2,
-  windowSeconds = 60
-): Promise<{ actuator_id: number; window_seconds: number; cycles: number; cpm: number }> {
-  const qs = new URLSearchParams({
-    actuator_id: String(actuatorId),
-    window_s: String(windowSeconds),
-  });
-  return fetchJson<{ actuator_id: number; window_seconds: number; cycles: number; cpm: number }>(
-    `/api/live/cycles/rate_by_actuator?${qs.toString()}`
-  );
-}
-
-// Vibração (janela móvel simples)
-export async function getVibration(window_s: number = 2): Promise<any> {
-  const params = new URLSearchParams({ window_s: String(window_s) });
-  return fetchJson<any>(`/api/live/vibration?${params.toString()}`);
-}
+// Debug opcional
+export const __debug = { getApiBase, urlRoot: root, urlApi: api };
