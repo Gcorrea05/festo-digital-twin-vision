@@ -1,22 +1,34 @@
+// src/components/dashboard/ThreeDModel.tsx
 import React, { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls, useGLTF, Html } from "@react-three/drei";
 import * as THREE from "three";
+import { Compass, Square, Video } from "lucide-react";
+
 import { useActuatorSelection } from "@/context/ActuatorSelectionContext";
 import { useLive } from "@/context/LiveContext";
-import { Compass, Square, Video } from "lucide-react";
 import { useOpcStream } from "@/hooks/useOpcStream";
 
-/** ---------- KNOBS ---------- */
-const FIT_MULTIPLIER = 0.9; // >1 afasta, <1 aproxima (após auto-fit)
-const INITIAL_DIR = new THREE.Vector3(1.6, 1.2, 1.8).normalize(); // direção inicial da câmera
+/** ============================
+ *            KNOBS
+ *  Edite aqui para ajustar rápido
+ * ============================ */
+const FIT_MULTIPLIER = 0.9;                 // >1 afasta, <1 aproxima após auto-fit
+const INITIAL_DIR = new THREE.Vector3(1.6, 1.2, 1.8).normalize();
 const INITIAL_FOV = 40;
 
-/** Facets vindas do live */
-type Facets = { S1?: 0 | 1; S2?: 0 | 1 };
-type ActuatorSnapshot = { id: 1 | 2; facets?: Facets };
+const ANIM_ADVANCE_Z = 0.25;               // deslocamento Z quando S2=1
+const ANIM_MS = 180;                       // duração da animação (ms)
 
-/** Resolve caminho dos GLBs respeitando BASE_URL (Vite) */
+const SHOW_FALLBACK_BOX_WHEN_MISSING = true; // desenha um cubo caso GLB não exista
+
+// Gera nomes dos sinais (caso o backend mude o padrão, altere aqui)
+const signalName = {
+  S1: (idx: 1 | 2) => `Recuado_${idx}S1`,
+  S2: (idx: 1 | 2) => `Avancado_${idx}S2`,
+};
+
+// Resolve caminho do GLB respeitando BASE_URL
 function getModelUrl(which: 1 | 2) {
   try {
     return new URL(`/A${which}.glb`, import.meta.env.BASE_URL).pathname;
@@ -25,7 +37,11 @@ function getModelUrl(which: 1 | 2) {
   }
 }
 
-/** Hook que posiciona câmera/controles para enquadrar o objeto */
+/** ---------- Tipos ---------- */
+type Facets = { S1?: 0 | 1; S2?: 0 | 1 };
+type ActuatorSnapshot = { id: 1 | 2; facets?: Facets };
+
+/** ---------- Auto-fit da câmera ---------- */
 function useAutoFit(targetRef: React.RefObject<THREE.Object3D | null>) {
   const { camera, gl, controls } = useThree() as any;
   const [sphere, setSphere] = useState<{ center: THREE.Vector3; radius: number } | null>(null);
@@ -42,11 +58,9 @@ function useAutoFit(targetRef: React.RefObject<THREE.Object3D | null>) {
     box.getSize(size);
     const radius = Math.max(size.x, size.y, size.z) * 0.5 || 1;
 
-    // distâncias proporcionais p/ zoom
     const minDistance = Math.max(0.25, radius * 0.8);
     const maxDistance = Math.max(5, radius * 12);
 
-    // near/far + posição inicial
     camera.near = Math.max(0.01, radius / 50);
     camera.far = radius * 100;
     camera.fov = INITIAL_FOV;
@@ -77,42 +91,50 @@ function useAutoFit(targetRef: React.RefObject<THREE.Object3D | null>) {
 
   return { sphere, distances };
 }
-/** Modelo GLB com pequeno hook de animação opcional */
+
+/** ---------- Modelo GLB + animação por S2 ---------- */
 function GLBActuator({
   which,
   facets,
   groupRef,
+  glbOkRef,
 }: {
   which: 1 | 2;
   facets?: Facets;
   groupRef: React.RefObject<THREE.Group>;
+  glbOkRef: React.MutableRefObject<boolean>;
 }) {
   const url = getModelUrl(which);
   useGLTF.preload(getModelUrl(1));
   useGLTF.preload(getModelUrl(2));
-  const { scene } = useGLTF(url, true);
+
+  let scene: THREE.Object3D | null = null;
+  try {
+    const loaded = useGLTF(url, true) as { scene: THREE.Object3D };
+    scene = loaded.scene ?? null;
+    glbOkRef.current = !!scene;
+  } catch {
+    glbOkRef.current = false;
+  }
 
   useEffect(() => {
     if (!scene) return;
-    scene.traverse((o) => {
-      // @ts-ignore
+    scene.traverse((o: any) => {
       o.castShadow = true;
-      // @ts-ignore
       o.receiveShadow = true;
     });
   }, [scene]);
 
-  // Anima suavemente o deslocamento no Z quando S2=1 (avançado)
+  // anima suavemente deslocamento Z quando S2=1
   useEffect(() => {
     const s2 = facets?.S2 ?? 0;
     if (!groupRef.current) return;
-    const targetZ = s2 ? 0.25 : 0;
+    const targetZ = s2 ? ANIM_ADVANCE_Z : 0;
     let raf = 0;
     const start = groupRef.current.position.z;
-    const dur = 180; // ms
     const t0 = performance.now();
     const tick = () => {
-      const t = Math.min(1, (performance.now() - t0) / dur);
+      const t = Math.min(1, (performance.now() - t0) / ANIM_MS);
       groupRef.current!.position.z = THREE.MathUtils.lerp(start, targetZ, t);
       if (t < 1) raf = requestAnimationFrame(tick);
     };
@@ -120,10 +142,18 @@ function GLBActuator({
     return () => cancelAnimationFrame(raf);
   }, [facets?.S2, groupRef]);
 
-  return <primitive object={scene} dispose={null} />;
+  if (scene) return <primitive object={scene} dispose={null} />;
+
+  // Fallback minimalista (cubo), quando o GLB não está disponível
+  return SHOW_FALLBACK_BOX_WHEN_MISSING ? (
+    <mesh castShadow receiveShadow>
+      <boxGeometry args={[0.6, 0.4, 0.2]} />
+      <meshStandardMaterial color="#4f46e5" />
+    </mesh>
+  ) : null;
 }
 
-/** Componente que executa o auto-fit e permite callback após calcular bounding */
+/** ---------- Wrapper para aplicar auto-fit e (re)ajustes de controle ---------- */
 function AutoFit({
   groupRef,
   onFit,
@@ -143,29 +173,28 @@ function AutoFit({
   return null;
 }
 
-/** --- Principal --- */
+/** ---------- Principal ---------- */
 export default function ThreeDModel() {
   const { snapshot } = useLive();
   const { setSelectedId } = useActuatorSelection();
 
-  // índice do modelo (só 1/2). Câmera é controlada por showCamera.
+  // índice do modelo (1 ou 2)
   const [modelIndex, setModelIndex] = useState<1 | 2>(1);
   const [viewMode, setViewMode] = useState<"free" | "front">("free");
   const [showCamera, setShowCamera] = useState(false);
 
-  // WS: assina ambos sinais do atuador atual (S1/S2) para atualização instantânea
-  const s1Name = `Recuado_${modelIndex}S1`;
-  const s2Name = `Avancado_${modelIndex}S2`;
+  // nomes dos sinais
+  const s1Name = signalName.S1(modelIndex);
+  const s2Name = signalName.S2(modelIndex);
+
+  // stream polling dos sinais
   const { last: lastS1 } = useOpcStream({ name: s1Name });
   const { last: lastS2 } = useOpcStream({ name: s2Name });
 
-  // Câmera
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const camStreamRef = useRef<MediaStream | null>(null);
-
+  // manter seleção global do atuador (outros cards usam)
   useEffect(() => setSelectedId(modelIndex), [modelIndex, setSelectedId]);
 
-  // Facets do snapshot + override em tempo real via WS
+  // facets vindas do snapshot + overrides do stream
   const facetsFromSnapshot = useMemo(() => {
     const list = (snapshot?.actuators ?? []) as ActuatorSnapshot[];
     return list.find((a) => a.id === modelIndex)?.facets ?? {};
@@ -186,29 +215,35 @@ export default function ThreeDModel() {
     }
   }, [lastS2, s2Name]);
 
-  // Merge: WS prevalece sobre snapshot
-  const facets: Facets = useMemo(() => {
-    return {
+  const facets: Facets = useMemo(
+    () => ({
       S1: facetsWs.S1 ?? facetsFromSnapshot.S1 ?? 0,
       S2: facetsWs.S2 ?? facetsFromSnapshot.S2 ?? 0,
-    };
-  }, [facetsFromSnapshot, facetsWs]);
+    }),
+    [facetsFromSnapshot, facetsWs]
+  );
+
   // sanity-check de arquivo (só quando NÃO está em câmera)
   useEffect(() => {
     if (showCamera) return;
     const url = getModelUrl(modelIndex);
     fetch(url).catch((e) =>
       console.error(
-        `[3D] Falha ao carregar ${url}. Coloque A${modelIndex}.glb em /public (maiúsc/minúsc).`,
+        `[3D] Falha ao carregar ${url}. Coloque A${modelIndex}.glb em /public (respeita maiúsc/minúsc).`,
         e
       )
     );
   }, [showCamera, modelIndex]);
 
+  // refs
   const groupRef = useRef<THREE.Group>(null);
   const controlsRef = useRef<any>(null);
+  const glbOkRef = useRef<boolean>(true);
 
-  // Abrir/fechar webcam ao clicar no botão Live
+  /** Webcam (Live) no mesmo espaço do canvas */
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const camStreamRef = useRef<MediaStream | null>(null);
+
   useEffect(() => {
     const open = async () => {
       try {
@@ -233,7 +268,7 @@ export default function ThreeDModel() {
     return () => close();
   }, [showCamera]);
 
-  // aplica "Front View"
+  // aplicar “Front View”
   const applyFrontView = (center: THREE.Vector3, radius: number) => {
     const controls = controlsRef.current;
     if (!controls) return;
@@ -246,7 +281,7 @@ export default function ThreeDModel() {
     controls.update();
   };
 
-  // volta ao "Free View"
+  // voltar ao “Free View”
   const applyFreeView = () => {
     const controls = controlsRef.current;
     if (!controls) return;
@@ -256,7 +291,7 @@ export default function ThreeDModel() {
     controls.update();
   };
 
-  /** Botão padrão (tamanho maior) */
+  /** Botão padrão */
   const TabButton = ({
     active,
     onClick,
@@ -278,7 +313,7 @@ export default function ThreeDModel() {
 
   return (
     <div className="w-full rounded-xl border border-zinc-200 dark:border-zinc-800 p-3">
-      {/* Tabs apenas dos modelos (sem aba de câmera) */}
+      {/* Tabs: modelo 1 / 2 */}
       <div className="mb-3 flex items-center gap-3">
         <TabButton active={modelIndex === 1} onClick={() => setModelIndex(1)}>
           Modelo 1
@@ -288,7 +323,7 @@ export default function ThreeDModel() {
         </TabButton>
       </div>
 
-      {/* Área principal: 3D OU CÂMERA no MESMO espaço */}
+      {/* 3D ou câmera (no mesmo espaço) */}
       <div
         className="
           relative w-full overflow-hidden rounded-lg
@@ -313,7 +348,7 @@ export default function ThreeDModel() {
             <ambientLight intensity={0.7} />
             <directionalLight position={[3, 3, 3]} intensity={1} castShadow />
 
-            {/* Controles de órbita */}
+            {/* Controles */}
             <OrbitControls ref={controlsRef} makeDefault enableZoom enablePan />
 
             {/* Conteúdo 3D */}
@@ -325,11 +360,16 @@ export default function ThreeDModel() {
               }
             >
               <group ref={groupRef}>
-                <GLBActuator which={modelIndex} facets={facets} groupRef={groupRef} />
+                <GLBActuator
+                  which={modelIndex}
+                  facets={facets}
+                  groupRef={groupRef}
+                  glbOkRef={glbOkRef}
+                />
               </group>
             </Suspense>
 
-            {/* Auto-fit e re-aplicação da vista */}
+            {/* Auto-fit + re-aplica view mode */}
             <AutoFit
               groupRef={groupRef}
               onFit={(center, radius) => {
@@ -341,7 +381,7 @@ export default function ThreeDModel() {
         )}
       </div>
 
-      {/* Toolbar embaixo (com botões maiores) */}
+      {/* Toolbar */}
       <div className="mt-4 flex items-center gap-3">
         {/* Free View */}
         <button
@@ -379,10 +419,10 @@ export default function ThreeDModel() {
           Front View
         </button>
 
-        {/* separador visual */}
+        {/* separador */}
         <span className="mx-2 opacity-40 select-none">•</span>
 
-        {/* Live (abre/fecha câmera no mesmo espaço) */}
+        {/* Live camera (mesmo espaço) */}
         <button
           className={`inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium border ${
             showCamera ? "bg-emerald-600 text-white border-emerald-600" : "bg-transparent"

@@ -1,8 +1,4 @@
 // src/components/dashboard/MiniSparkline.tsx
-// Sparkline minimalista em SVG para mostrar tendência dos KPIs
-// - Recebe vetor de números, normaliza e desenha linha + preenchimento leve
-// - Sem dependências extras
-
 import React from "react";
 
 type Props = {
@@ -36,41 +32,21 @@ export default function MiniSparkline({
     );
   }
 
-  // Normaliza dados em [0,1]
   const min = Math.min(...data);
   const max = Math.max(...data);
   const span = max - min || 1;
   const norm = data.map((v) => (v - min) / span);
 
-  // Gera pontos em coordenadas SVG
   const step = width / (data.length - 1);
   const points = norm.map((v, i) => [i * step, height - v * height]);
 
-  const pathD = points
-    .map((p, i) => (i === 0 ? `M${p[0]},${p[1]}` : `L${p[0]},${p[1]}`))
-    .join(" ");
-
-  // Área preenchida
-  const fillD =
-    pathD +
-    ` L${width},${height} L0,${height} Z`;
+  const pathD = points.map((p, i) => (i === 0 ? `M${p[0]},${p[1]}` : `L${p[0]},${p[1]}`)).join(" ");
+  const fillD = pathD + ` L${width},${height} L0,${height} Z`;
 
   return (
-    <svg
-      width={width}
-      height={height}
-      viewBox={`0 0 ${width} ${height}`}
-      className="overflow-visible"
-    >
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="overflow-visible">
       <path d={fillD} fill={fill} stroke="none" />
-      <path
-        d={pathD}
-        fill="none"
-        stroke={color}
-        strokeWidth={1.5}
-        strokeLinejoin="round"
-        strokeLinecap="round"
-      />
+      <path d={pathD} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" />
     </svg>
   );
 }

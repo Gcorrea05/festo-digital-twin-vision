@@ -1,3 +1,4 @@
+// src/components/dashboard/KpiCard.tsx
 import React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -57,17 +58,13 @@ export default function KpiCard({
   return (
     <Card className={`h-full w-full min-w-0 ${className}`}>
       <CardHeader className="pb-2">
-        {/* grid 2 colunas: título flexível, badge fixo */}
         <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2">
           <CardTitle className="min-w-0 text-xs sm:text-sm font-medium text-zinc-600 dark:text-zinc-300 leading-tight truncate">
             {title}
           </CardTitle>
-          <span className={`shrink-0 ${badgeClass(severity)}`}>
-            {severity}
-          </span>
+          <span className={`shrink-0 ${badgeClass(severity)}`}>{severity}</span>
         </div>
       </CardHeader>
-
       <CardContent className="pt-0">
         <div className="flex items-end justify-between gap-4">
           <div className="flex-1 min-w-0">
@@ -76,11 +73,7 @@ export default function KpiCard({
               {withUnit}
             </div>
           </div>
-          {trend ? (
-            <div className="w-20 sm:w-28 h-10 sm:h-12 flex items-center justify-end shrink-0">
-              {trend}
-            </div>
-          ) : null}
+          {trend ? <div className="w-20 sm:w-28 h-10 sm:h-12 flex items-center justify-end shrink-0">{trend}</div> : null}
         </div>
       </CardContent>
     </Card>

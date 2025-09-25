@@ -1,16 +1,46 @@
-// src/components/dashboard/ProductionStats.tsx (1/2) — imports, tipos, utils, efeitos
+// src/components/dashboard/ProductionStats.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer,
   CartesianGrid, PieChart, Pie, Cell, LineChart, Line, AreaChart, Area
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { getOPCHistory } from "@/lib/api";
 import { useOpcStream } from "@/hooks/useOpcStream";
-import { Button } from "@/components/ui/button";
+
+/** ============================
+ *            KNOBS
+ *  Edite aqui para ajustar rápido
+ * ============================ */
+const WINDOWS = {
+  week: "-168h",  // janela p/ produção semanal
+  cpm: "-60m",    // janela p/ CPM (60 min)
+  cycles: "-30m", // janela p/ tempos de ciclo
+  occ: "-60m",    // janela p/ ocupação
+} as const;
+
+// se no futuro o backend trouxer defeitos, plugar aqui
+const USE_REJECTS_FROM_BACKEND = false;
+
+const STREAM_NAME = {
+  S2: (id: number) => `Avancado_${id}S2`, // ajuste padrão dos nomes
+  S1: (id: number) => `Recuado_${id}S1`,
+};
+
+const COLORS = {
+  indigo: "#4f46e5",
+  sky: "#0ea5e9",
+  emerald: "#10b981",
+  blue: "#2563eb",
+  green: "#16a34a",
+  amber: "#f59e0b",
+  orange: "#ea580c",
+  red: "#ef4444",
+};
 
 type DayStat = { name: string; production: number; rejects: number };
-type CpmPoint = { t: string; cpm: number };                 // t = HH:MM
+type CpmPoint = { t: string; cpm: number }; // t = "HH:MM"
 type CyclePoint = { idx: number; seconds: number };
 type PieItem = { name: string; value: number };
 
@@ -29,39 +59,27 @@ function toMs(rec: any): number {
 const toMinuteKey = (d: Date) =>
   d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
 
-// Paleta (mantendo consistência com o restante do app)
-const COLORS = {
-  indigo: "#4f46e5",
-  sky: "#0ea5e9",
-  emerald: "#10b981",
-  blue: "#2563eb",
-  green: "#16a34a",
-  amber: "#f59e0b",
-  orange: "#ea580c",
-  red: "#ef4444",
-  cyan: "#22d3ee",
-};
-
 export default function ProductionStats() {
   // ---- Atuador selecionável (AT1/AT2) ----
   const [actuatorId, setActuatorId] = useState<number>(1);
 
-  // ---- Estados para todos os gráficos ----
+  // ---- Estados para os gráficos ----
   const [week, setWeek] = useState<DayStat[]>([]);
   const [cpmSeries, setCpmSeries] = useState<CpmPoint[]>([]);
   const [cycleSeries, setCycleSeries] = useState<CyclePoint[]>([]);
   const [occupancy, setOccupancy] = useState<PieItem[]>([]);
 
   // stream do S2 (AT{actuatorId}): Avancado_{id}S2
-  const { last } = useOpcStream({ name: `Avancado_${actuatorId}S2` });
+  const { last } = useOpcStream({ name: STREAM_NAME.S2(actuatorId) });
 
   // referência ao último "rise" de S2 para calcular tempo de ciclo
   const lastRiseTsRef = useRef<number | null>(null);
 
   // ---- Histórico semanal (produção = contagem de subidas de S2) ----
   async function loadWeek(id: number) {
-    const hist = await getOPCHistory({ actuatorId: id, facet: "S2", since: "-168h", asc: true });
+    const hist = await getOPCHistory({ actuatorId: id, facet: "S2", since: WINDOWS.week, asc: true });
     const byDay: Record<string, number> = {};
+
     for (let i = 1; i < hist.length; i++) {
       const prev = toNumValue(hist[i - 1]);
       const curr = toNumValue(hist[i]);
@@ -71,27 +89,34 @@ export default function ProductionStats() {
         byDay[key] = (byDay[key] || 0) + 1;
       }
     }
+
     const days: DayStat[] = [];
     for (let i = 6; i >= 0; i--) {
       const d = new Date();
       d.setDate(d.getDate() - i);
       const key = d.toISOString().slice(0, 10);
       const name = d.toLocaleDateString(undefined, { weekday: "short" });
-      days.push({ name, production: byDay[key] || 0, rejects: 0 });
+      days.push({
+        name,
+        production: byDay[key] || 0,
+        rejects: USE_REJECTS_FROM_BACKEND ? Number((byDay[key] && 0) ?? 0) : 0,
+      });
     }
     setWeek(days);
   }
 
   // ---- CPM (últimos 60 min): agrega subidas por minuto ----
   async function loadCpm(id: number) {
-    const hist = await getOPCHistory({ actuatorId: id, facet: "S2", since: "-60m", asc: true });
+    const hist = await getOPCHistory({ actuatorId: id, facet: "S2", since: WINDOWS.cpm, asc: true });
     const now = Date.now();
     const start = now - 60 * 60 * 1000;
     const buckets = new Map<string, number>(); // minute -> count
+
     for (let i = 59; i >= 0; i--) {
       const t = new Date(now - i * 60000);
       buckets.set(toMinuteKey(t), 0);
     }
+
     for (let i = 1; i < hist.length; i++) {
       const prev = toNumValue(hist[i - 1]);
       const curr = toNumValue(hist[i]);
@@ -103,12 +128,13 @@ export default function ProductionStats() {
         }
       }
     }
+
     setCpmSeries(Array.from(buckets.entries()).map(([t, cpm]) => ({ t, cpm })));
   }
 
   // ---- Tempo de ciclo: delta entre subidas consecutivas de S2 ----
   async function loadCycleTimes(id: number) {
-    const hist = await getOPCHistory({ actuatorId: id, facet: "S2", since: "-30m", asc: true });
+    const hist = await getOPCHistory({ actuatorId: id, facet: "S2", since: WINDOWS.cycles, asc: true });
     const rises: number[] = [];
     for (let i = 1; i < hist.length; i++) {
       const prev = toNumValue(hist[i - 1]);
@@ -129,8 +155,8 @@ export default function ProductionStats() {
   // ---- Ocupação (última 1h): integra tempos em S1=1, S2=1, TRANSIÇÃO ----
   async function loadOccupancy(id: number) {
     const [h1, h2] = await Promise.all([
-      getOPCHistory({ actuatorId: id, facet: "S1", since: "-60m", asc: true }),
-      getOPCHistory({ actuatorId: id, facet: "S2", since: "-60m", asc: true }),
+      getOPCHistory({ actuatorId: id, facet: "S1", since: WINDOWS.occ, asc: true }),
+      getOPCHistory({ actuatorId: id, facet: "S2", since: WINDOWS.occ, asc: true }),
     ]);
 
     const now = Date.now();
@@ -181,8 +207,8 @@ export default function ProductionStats() {
     loadOccupancy(actuatorId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actuatorId]);
-// src/components/dashboard/ProductionStats.tsx (2/2) — stream, CSV, UI responsiva
-  // ---- Efeito: stream -> atualizações em tempo real ----
+
+  // ---- Efeito: stream -> atualizações em (quase) tempo real ----
   useEffect(() => {
     if (last?.value_bool === true) {
       const now = new Date();
@@ -194,11 +220,10 @@ export default function ProductionStats() {
         const idx = copy.findIndex((p) => p.t === minKey);
         if (idx >= 0) copy[idx] = { ...copy[idx], cpm: copy[idx].cpm + 1 };
         else copy.push({ t: minKey, cpm: 1 });
-        // mantém ordenado por HH:MM (opcional) e limita 60
         return copy.slice(-60);
       });
 
-      // 2) incrementa produção de "hoje" (semana)
+      // 2) incrementa produção do dia atual (semana)
       setWeek((old) => {
         const todayName = now.toLocaleDateString(undefined, { weekday: "short" });
         return old.map((d) => (d.name === todayName ? { ...d, production: d.production + 1 } : d));
@@ -214,18 +239,16 @@ export default function ProductionStats() {
       }
       lastRiseTsRef.current = tsNow;
 
-      // 4) ocupação: recarrega rápido (sem criar endpoint novo)
+      // 4) ocupação: recarrega (rápido)
       loadOccupancy(actuatorId);
     }
   }, [last, actuatorId]);
 
-  // ---- CSV exports (sem endpoints novos) ----
+  // ---- CSV exports ----
   function downloadCsv(filename: string, rows: any[], headers?: string[]) {
     const cols = headers ?? (rows.length ? Object.keys(rows[0]) : []);
     const escape = (v: any) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const csv = [cols.join(","), ...rows.map((r) => cols.map((c) => escape(r[c])).join(","))].join(
-      "\n"
-    );
+    const csv = [cols.join(","), ...rows.map((r) => cols.map((c) => escape(r[c])).join(","))].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -235,14 +258,8 @@ export default function ProductionStats() {
     URL.revokeObjectURL(url);
   }
 
-  const totalProducts = useMemo(
-    () => week.reduce((s, d) => s + d.production, 0),
-    [week]
-  );
-  const totalDefects = useMemo(
-    () => week.reduce((s, d) => s + d.rejects, 0),
-    [week]
-  );
+  const totalProducts = useMemo(() => week.reduce((s, d) => s + d.production, 0), [week]);
+  const totalDefects = useMemo(() => week.reduce((s, d) => s + d.rejects, 0), [week]);
   const qualityPie: PieItem[] = useMemo(
     () => [
       { name: "Good Products", value: Math.max(0, totalProducts - totalDefects) },
@@ -279,16 +296,10 @@ export default function ProductionStats() {
           <Button variant="outline" onClick={() => downloadCsv(`cpm_AT${actuatorId}.csv`, cpmSeries)}>
             Export CPM CSV
           </Button>
-          <Button
-            variant="outline"
-            onClick={() => downloadCsv(`cycles_AT${actuatorId}.csv`, cycleSeries)}
-          >
+          <Button variant="outline" onClick={() => downloadCsv(`cycles_AT${actuatorId}.csv`, cycleSeries)}>
             Export Cycles CSV
           </Button>
-          <Button
-            variant="outline"
-            onClick={() => downloadCsv(`occupancy_AT${actuatorId}.csv`, occupancy)}
-          >
+          <Button variant="outline" onClick={() => downloadCsv(`occupancy_AT${actuatorId}.csv`, occupancy)}>
             Export Occupancy CSV
           </Button>
         </div>
@@ -330,7 +341,7 @@ export default function ProductionStats() {
           </ResponsiveContainer>
         </div>
 
-        {/* 3) Tempo de ciclo (últimos N ciclos) */}
+        {/* 3) Tempo de ciclo */}
         <div className="min-w-0 w-full h-64 sm:h-72 md:h-80 lg:h-[28rem]">
           <h3 className="text-base font-medium mb-2">Cycle Time (sec) — AT{actuatorId}</h3>
           <ResponsiveContainer width="100%" height="100%">
@@ -347,7 +358,7 @@ export default function ProductionStats() {
           </ResponsiveContainer>
         </div>
 
-        {/* 4) Ocupação de estados (última 1h) */}
+        {/* 4) Ocupação de estados */}
         <div className="min-w-0 w-full h-64 sm:h-72 md:h-80 lg:h-[28rem]">
           <h3 className="text-base font-medium mb-2">
             State Occupancy (last 1h) — AT{actuatorId}

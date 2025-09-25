@@ -1,7 +1,6 @@
 // src/context/LiveContext.tsx
 // Contexto global para snapshot live/playback
-// - Polling REST a cada 2s (health, actuators, cpm, mpu)
-// - WS OPC: /ws/opc?all=true para atualizar S1/S2 em tempo real
+// POLLING-ONLY (sem WebSocket) + system.components do backend
 
 import React, {
   createContext,
@@ -11,14 +10,13 @@ import React, {
   useState,
   ReactNode,
 } from "react";
-import { openOpcWS, WSClient } from "@/lib/ws";
+
 import {
   getHealth,
-  getLiveActuatorsState,
-  getOPCHistory,
+  getLiveActuatorsState, // traz system.status + facets/cpm por atuador (helper do api.ts)
   getMpuIds,
   getLatestMPU,
-  type MPUDataRaw,
+  getSystemStatus,        // <- NOVO: status de componentes calculado no backend
 } from "@/lib/api";
 
 export type LiveMode = "live" | "playback";
@@ -35,7 +33,16 @@ export type ActuatorSnapshot = {
 };
 
 export type Snapshot = {
-  system: { status: "ok" | "down" | "unknown"; ts: number };
+  system: {
+    status: "ok" | "down" | "unknown";
+    ts: number;
+    components?: {
+      actuators?: string;
+      sensors?: string;
+      transmission?: string;
+      control?: string;
+    };
+  };
   actuators: ActuatorSnapshot[];
   mpu?: {
     ts: string;
@@ -66,177 +73,176 @@ export function useLive(): LiveContextValue {
 
 type Props = { children: ReactNode };
 
-// Conta subidas (0->1) de S2 nos últimos 60s para calcular CPM
-async function getCpmLastMin(actuatorId: number): Promise<number> {
-  try {
-    const hist = await getOPCHistory({
-      actuatorId,
-      facet: "S2",
-      since: "-60s",
-      asc: true,
-      limit: 2000,
-    });
-    let c = 0;
-    for (let i = 1; i < hist.length; i++) {
-      if (Number(hist[i - 1].value) === 0 && Number(hist[i].value) === 1) c++;
-    }
-    return c;
-  } catch {
-    return 0;
-  }
+// ---- helpers ----
+function normSystemStatus(s: any): "ok" | "down" | "unknown" {
+  const v = String(s ?? "").toLowerCase();
+  if (v.includes("ok") || v.includes("operational")) return "ok";
+  if (v.includes("down") || v.includes("offline")) return "down";
+  return "unknown";
 }
 
-// Normaliza um MPUDataRaw em shape consistente
-function normalizeMpu(raw: MPUDataRaw | undefined): Snapshot["mpu"] {
-  if (!raw) return null;
-  return {
-    ts: raw.ts_utc ?? raw.ts ?? new Date().toISOString(),
-    id: raw.id,
-    ax: raw.ax ?? raw.ax_g ?? 0,
-    ay: raw.ay ?? raw.ay_g ?? 0,
-    az: raw.az ?? raw.az_g ?? 0,
-    gx: raw.gx ?? raw.gx_dps ?? 0,
-    gy: raw.gy ?? raw.gy_dps ?? 0,
-    gz: raw.gz ?? raw.gz_dps ?? 0,
-    temp_c: raw.temp_c ?? 0,
-  };
+function decideFsmState(f: { S1: 0 | 1; S2: 0 | 1 }): string {
+  const s1 = f.S1, s2 = f.S2;
+  if (s1 === 1 && s2 === 0) return "fechado";
+  if (s2 === 1 && s1 === 0) return "aberto";
+  if (s1 === 1 && s2 === 1) return "erro";
+  return "indef";
 }
 
 export function LiveProvider({ children }: Props) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [mode, setMode] = useState<LiveMode>("live");
 
-  const pollingTimer = useRef<number | null>(null);
-  const wsRef = useRef<WSClient | null>(null);
+  // Estados parciais para compor o snapshot
+  const [systemStatus, setSystemStatus] = useState<"ok" | "down" | "unknown">(
+    "unknown"
+  );
+  const [systemComponents, setSystemComponents] = useState<
+    Snapshot["system"]["components"]
+  >(undefined);
+  const [actuators, setActuators] = useState<ActuatorSnapshot[]>([]);
+  const [mpu, setMpu] = useState<Snapshot["mpu"]>(null);
+  const mpuChosenIdRef = useRef<string | null>(null);
 
-  // ---- Polling: monta snapshot completo a cada 2s ----
+  // -------- Poll 1: System + Actuators + CPM (500 ms) --------
   useEffect(() => {
     if (mode !== "live") return;
+    let timer: number | null = null;
+    let cancelled = false;
 
-    const poll = async () => {
+    const tick = async () => {
       try {
-        const h = await getHealth().catch(() => null);
-        if (!h || h.status !== "ok") return;
+        // live agrega dados de atuadores e status básico
+        const live = await getLiveActuatorsState().catch(async () => {
+          const h = await getHealth().catch(() => ({ status: "offline" }));
+          return {
+            ts: new Date().toISOString(),
+            system: { status: (h?.status ?? "offline").toString() },
+            actuators: [] as any[],
+          };
+        });
 
-        const live = await getLiveActuatorsState().catch(() => ({
-          actuators: [] as any[],
-        }));
-        const acts = (live.actuators || [])
-          .map((a: any) => {
-            const m = String(a.actuator_id || "").match(/(\d+)/);
-            const id = m ? parseInt(m[1], 10) : 0;
-            return {
-              id,
-              recuado: a.recuado as 0 | 1,
-              avancado: a.avancado as 0 | 1,
-              ts: a.ts as string,
-              fsm: { state: a.state },
-            };
-          })
-          .filter((a: any) => a.id > 0);
-
-        // CPM por atuador
-        const ids = acts.map((a) => a.id);
-        const [cpm1, cpm2] = await Promise.all([
-          ids.includes(1) ? getCpmLastMin(1) : Promise.resolve(0),
-          ids.includes(2) ? getCpmLastMin(2) : Promise.resolve(0),
-        ]);
-
-        // MPU: pega o primeiro id disponível
-        let mpu: Snapshot["mpu"] = null;
+        // componentes de sistema calculados no backend
+        let comps: Snapshot["system"]["components"] = undefined;
         try {
-          const mpuIds = await getMpuIds();
-          if (mpuIds && mpuIds.length) {
-            const raw = await getLatestMPU(mpuIds[0]).catch(() => undefined);
-            mpu = normalizeMpu(raw);
-          }
+          const sys = await getSystemStatus();
+          comps = sys?.components ?? undefined;
         } catch {
-          /* ignore */
+          comps = undefined;
         }
 
-        const snap: Snapshot = {
-          system: { status: "ok", ts: Date.now() },
-          actuators: acts.map((a) => ({
-            id: a.id,
-            fsm: a.fsm,
-            ts: a.ts,
-            facets: { S1: a.recuado ?? 0, S2: a.avancado ?? 0 },
-            cpm: a.id === 1 ? cpm1 : a.id === 2 ? cpm2 : 0,
-            rms: 0,
-          })),
-          mpu,
-        };
-        setSnapshot(snap);
+        const sys = normSystemStatus(live?.system?.status);
+        const tsNow = new Date().toISOString();
+
+        const acts: ActuatorSnapshot[] = (live?.actuators ?? [])
+          .map((a: any) => {
+            const id = Number(a?.id ?? 0);
+            if (!id) return null;
+
+            // facets boolean|null -> 0|1
+            const s1b = a?.facets?.S1;
+            const s2b = a?.facets?.S2;
+            const facets: Facets = {
+              S1: (s1b === true ? 1 : s1b === false ? 0 : 0) as 0 | 1,
+              S2: (s2b === true ? 1 : s2b === false ? 0 : 0) as 0 | 1,
+            };
+
+            return {
+              id,
+              ts: tsNow,
+              fsm: { state: decideFsmState(facets) },
+              facets,
+              cpm: Number(a?.cpm ?? 0),
+              rms: 0,
+            } as ActuatorSnapshot;
+          })
+          .filter(Boolean) as ActuatorSnapshot[];
+
+        if (!cancelled) {
+          setSystemStatus(sys);
+          setSystemComponents(comps);
+          setActuators(acts);
+        }
       } catch {
-        // silencioso se backend off
+        if (!cancelled) {
+          setSystemStatus("down");
+          setSystemComponents(undefined);
+          setActuators([]);
+        }
+      } finally {
+        if (!cancelled) {
+          timer = window.setTimeout(tick, 500) as unknown as number;
+        }
       }
     };
 
-    poll();
-    pollingTimer.current = window.setInterval(
-      poll,
-      2000
-    ) as unknown as number;
-
+    tick();
     return () => {
-      if (pollingTimer.current) {
-        clearInterval(pollingTimer.current);
-        pollingTimer.current = null;
-      }
+      if (timer) clearTimeout(timer);
     };
   }, [mode]);
 
-  // ---- WS OPC: atualiza facets em tempo real ----
+  // -------- Poll 2: MPU latest (1 s) --------
   useEffect(() => {
     if (mode !== "live") return;
-    wsRef.current?.close();
+    let timer: number | null = null;
+    let cancelled = false;
 
-    const client = openOpcWS({
-      all: true,
-      onMessage: (m) => {
-        if (m?.type !== "opc_event" || !m?.name) return;
-        const rec = /^Recuado_(\d+)S1$/i.exec(m.name);
-        const ava = /^Avancado_(\d+)S2$/i.exec(m.name);
-        if (!rec && !ava) return;
+    const discoverAndTick = async () => {
+      try {
+        if (!mpuChosenIdRef.current) {
+          const ids = await getMpuIds().catch(() => []);
+          if (ids && ids.length) {
+            mpuChosenIdRef.current = String(ids[0]);
+          }
+        }
+        if (mpuChosenIdRef.current) {
+          const raw = await getLatestMPU(mpuChosenIdRef.current as any).catch(
+            () => null
+          );
+          if (!cancelled) {
+            if (!raw) {
+              setMpu(null);
+            } else {
+              setMpu({
+                ts: String(raw.ts_utc ?? new Date().toISOString()),
+                id: String(raw.id ?? "MPU"),
+                ax: Number(raw.ax ?? 0),
+                ay: Number(raw.ay ?? 0),
+                az: Number(raw.az ?? 0),
+                gx: Number((raw as any).gx ?? (raw as any).gx_dps ?? 0),
+                gy: Number((raw as any).gy ?? (raw as any).gy_dps ?? 0),
+                gz: Number((raw as any).gz ?? (raw as any).gz_dps ?? 0),
+                temp_c: Number((raw as any).temp_c ?? 0),
+              });
+            }
+          }
+        }
+      } catch {
+        if (!cancelled) setMpu(null);
+      } finally {
+        if (!cancelled) {
+          timer = window.setTimeout(discoverAndTick, 1000) as unknown as number;
+        }
+      }
+    };
 
-        const id = Number((rec?.[1] ?? ava?.[1]) || 0);
-        if (!id) return;
-
-        const isOne =
-          typeof m.value_bool === "boolean"
-            ? m.value_bool
-              ? 1
-              : 0
-            : m.value_num
-            ? 1
-            : 0;
-
-        setSnapshot((prev) => {
-          if (!prev) return prev;
-          const next = {
-            ...prev,
-            actuators: prev.actuators.map((a) => ({ ...a })),
-          };
-          const idx = next.actuators.findIndex((a) => a.id === id);
-          if (idx < 0) return prev;
-
-          const a = next.actuators[idx];
-          const facets: Facets = { ...a.facets };
-          if (rec) facets.S1 = isOne as 0 | 1;
-          if (ava) facets.S2 = isOne as 0 | 1;
-          next.actuators[idx] = {
-            ...a,
-            facets,
-            ts: (m.ts_utc as string) ?? a.ts,
-          };
-          return next;
-        });
-      },
-    });
-
-    wsRef.current = client;
-    return () => client.close();
+    discoverAndTick();
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
   }, [mode]);
+
+  // -------- Composer: monta o Snapshot final quando algo muda --------
+  useEffect(() => {
+    if (mode !== "live") return;
+    const snap: Snapshot = {
+      system: { status: systemStatus, ts: Date.now(), components: systemComponents },
+      actuators,
+      mpu,
+    };
+    setSnapshot(snap);
+  }, [mode, systemStatus, systemComponents, actuators, mpu]);
 
   return (
     <LiveContext.Provider value={{ snapshot, mode, setMode }}>

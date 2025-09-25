@@ -8,6 +8,12 @@ export function getApiBase() {
   return API_BASE;
 }
 
+export type AlertItem = {
+  id: string | number;
+  message: string;
+  severity: "info" | "warning" | "critical";
+  timestamp: string; // ISO
+};
 // Flags
 const MPU_DISABLED =
   String((import.meta as any)?.env?.VITE_DISABLE_MPU ?? "").toLowerCase() ===
@@ -386,6 +392,41 @@ export async function getHealth(): Promise<HealthResp> {
   return r ?? { status: "offline" };
 }
 
+export async function getAlerts(): Promise<AlertItem[]> {
+  // tenta caminhos comuns, seguindo a estratégia robusta do arquivo
+  const raw =
+    (await tryFetchJson<any>([
+      "/alerts",
+      "/api/alerts",
+      "/events/alerts",
+      "/api/events/alerts",
+    ])) ?? [];
+
+  // normalização defensiva
+  const arr = Array.isArray(raw)
+    ? raw
+    : Array.isArray(raw?.data)
+    ? raw.data
+    : Array.isArray(raw?.items)
+    ? raw.items
+    : [];
+
+  return arr.map((x: any, i: number) => ({
+    id: x?.id ?? i,
+    message: String(x?.message ?? x?.msg ?? "alert"),
+    severity: ((): "info" | "warning" | "critical" => {
+      const s = String(x?.severity ?? x?.level ?? "info").toLowerCase();
+      if (s === "critical" || s === "crit" || s === "error") return "critical";
+      if (s === "warning" || s === "warn") return "warning";
+      return "info";
+    })(),
+    timestamp: String(
+      x?.timestamp ?? x?.ts ?? x?.ts_utc ?? x?.created_at ?? new Date().toISOString()
+    ),
+  }));
+}
+
+
 export function opcName(actuatorId: number, facet: "S1" | "S2") {
   return facet === "S1"
     ? `Recuado_${actuatorId}S1`
@@ -451,13 +492,20 @@ function buildMpuHistoryPaths(
   limit: number,
   asc: boolean
 ) {
-  const qs = (params: Record<string, string | number>) =>
+  // aceita undefined, filtra antes de criar a querystring
+  const qs = (params: Record<string, string | number | undefined>) =>
     "?" +
     new URLSearchParams(
-      Object.entries(params).map(([k, v]) => [k, String(v)])
+      Object.entries(params)
+        .filter(([, v]) => v !== undefined && v !== null)
+        .map(([k, v]) => [k, String(v as string | number)])
     ).toString();
 
-  const baseParams = { since, limit, asc: asc ? 1 : 0 };
+  const baseParams: Record<string, string | number> = {
+    since,
+    limit,
+    asc: asc ? 1 : 0,
+  };
 
   const qp = [
     { id: qid },
@@ -757,4 +805,16 @@ export async function getLiveActuatorsState(): Promise<LiveSnapshot> {
       { id: 2, facets: { S1: a2s1.value, S2: a2s2.value }, cpm: cpm2 ?? null },
     ],
   };
+}
+export async function getSystemStatus(): Promise<{
+  components: {
+    actuators?: string; sensors?: string; transmission?: string; control?: string;
+  };
+}> {
+const data = await (async () => {
+    try { return await fetchJson<any>("/api/system/status"); } catch {}
+    try { return await fetchJson<any>("/system/status"); } catch {}
+    return { components: {} };
+  })();
+  return data ?? { components: {} };
 }

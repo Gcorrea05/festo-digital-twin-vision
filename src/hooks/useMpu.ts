@@ -1,177 +1,203 @@
 // src/hooks/useMpu.ts
-import { useEffect, useRef, useState } from "react";
-import { openMpuWS, WSClient } from "@/lib/ws";
-import { getMpuIds, getMPUHistory, getLatestMPU } from "@/lib/api";
+// Hooks de MPU via polling (sem WebSocket)
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import { getMpuIds as apiGetMpuIds, getMPUHistory, getLatestMPU } from "@/lib/api";
 
 export type MpuSample = {
   ts: string;
-  id: string; // "MPUA1" | "MPUA2"
+  id: string; // "MPUA1" | "MPUA2" | outro identificador
   ax: number; ay: number; az: number;
   gx: number; gy: number; gz: number;
   temp_c: number;
 };
 
-// Normaliza registros vindos da API/WS (aceita *_g / *_dps)
+// Normaliza registros vindos da API (aceita *_g / *_dps / aliases)
 function normalizeMPU(m: any): MpuSample {
   return {
-    ts: m?.ts_utc ?? m?.ts ?? new Date().toISOString(),
-    id: m?.id ?? "unknown",
-    ax: m?.ax ?? m?.ax_g ?? 0,
-    ay: m?.ay ?? m?.ay_g ?? 0,
-    az: m?.az ?? m?.az_g ?? 0,
-    gx: m?.gx ?? m?.gx_dps ?? 0,
-    gy: m?.gy ?? m?.gy_dps ?? 0,
-    gz: m?.gz ?? m?.gz_dps ?? 0,
-    temp_c: m?.temp_c ?? 0,
+    ts: String(m?.ts_utc ?? m?.ts ?? new Date().toISOString()),
+    id: String(m?.id ?? m?.mpu_id ?? "MPU"),
+    ax: Number(m?.ax ?? m?.ax_g ?? m?.x ?? m?.accel_x ?? 0),
+    ay: Number(m?.ay ?? m?.ay_g ?? m?.y ?? m?.accel_y ?? 0),
+    az: Number(m?.az ?? m?.az_g ?? m?.z ?? m?.accel_z ?? 0),
+    gx: Number(m?.gx ?? m?.gx_dps ?? 0),
+    gy: Number(m?.gy ?? m?.gy_dps ?? 0),
+    gz: Number(m?.gz ?? m?.gz_dps ?? 0),
+    temp_c: Number(m?.temp_c ?? 0),
   };
 }
 
-// ===== Hook: lista de IDs do MPU =====
-export function useMpuIds() {
+// Converte string/number para o tipo aceito pelo api.ts
+// -> number | "MPUA1" | "MPUA2"
+function coerceMpuIdForApi(id: string | number): number | "MPUA1" | "MPUA2" {
+  if (typeof id === "number") return id;
+  const s = String(id).trim();
+  if (s === "MPUA1" || s === "MPUA2") return s;
+  if (/^\d+$/.test(s)) return Number(s);
+  // fallback: tenta inferir pelo sufixo; default para MPUA1
+  return s.toUpperCase().includes("A2") ? "MPUA2" : "MPUA1";
+}
+
+/* =========================
+ *  IDs de MPUs (polling)
+ *  Retorna string[] para manter compat com o resto do app.
+ * ========================= */
+export function useMpuIds(pollMs = 30000) {
   const [ids, setIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let alive = true;
-    (async () => {
+    let timer: number | null = null;
+    let cancelled = false;
+
+    const tick = async () => {
       try {
         setLoading(true);
-        const list = await getMpuIds();
-        if (!alive) return;
-        setIds(Array.isArray(list) ? list : []);
-        setError(null);
+        const list = await apiGetMpuIds();
+        if (!cancelled) {
+          const asStrings = Array.isArray(list) ? list.map((v) => String(v)) : [];
+          setIds(asStrings);
+          setError(null);
+        }
       } catch (e: any) {
-        if (!alive) return;
-        setError(e?.message ?? "Erro ao listar MPUs");
+        if (!cancelled) setError(e?.message ?? "Erro ao listar MPUs");
       } finally {
-        if (alive) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          timer = window.setTimeout(tick, pollMs) as unknown as number;
+        }
       }
-    })();
-    return () => {
-      alive = false;
     };
-  }, []);
+
+    tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [pollMs]);
 
   return { ids, loading, error };
 }
 
-// ===== Hook: histórico do MPU (usa GET /mpu/history) =====
+/* =========================
+ *  Histórico do MPU (polling)
+ *  Assinatura usada em Analytics.tsx:
+ *    useMpuHistory(mpuId, "-10m", 2000, true)
+ * ========================= */
 export function useMpuHistory(
-  id: string | null,
-  since = "-5m",
-  limit = 1000,
-  asc = true
+  id: string | number | null,
+  since: string = "-5m",
+  limit: number = 1000,
+  asc: boolean = true,
+  pollMs: number = 15000
 ) {
   const [rows, setRows] = useState<MpuSample[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState<boolean>(!!id);
   const [error, setError] = useState<string | null>(null);
-  const reqSeq = useRef(0);
+
+  // chave memoizada evita re-poll desnecessário
+  const key = useMemo(
+    () => (id == null ? null : `${String(id)}|${since}|${limit}|${asc}`),
+    [id, since, limit, asc]
+  );
 
   useEffect(() => {
-    if (!id) {
+    if (!key || id == null) {
       setRows([]);
       setLoading(false);
       setError(null);
       return;
     }
 
-    const seq = ++reqSeq.current;
-    let alive = true;
+    let timer: number | null = null;
+    let cancelled = false;
 
-    (async () => {
+    const tick = async () => {
       try {
         setLoading(true);
-        const r = await getMPUHistory({ id, since, limit, asc });
-        if (!alive || reqSeq.current !== seq) return;
-        const norm = (r || []).map(normalizeMPU);
-        setRows(norm);
-        setError(null);
+        const apiId = coerceMpuIdForApi(id);
+        // getMPUHistory em src/lib/api.ts é posicional: (id, since, limit, asc)
+        const data = await getMPUHistory(apiId, since, limit, asc);
+        if (!cancelled) {
+          const norm = (Array.isArray(data) ? data : []).map(normalizeMPU);
+          setRows(norm);
+          setError(null);
+        }
       } catch (e: any) {
-        if (!alive || reqSeq.current !== seq) return;
-        setError(e?.message ?? "Erro ao buscar histórico MPU");
+        if (!cancelled) setError(e?.message ?? "Erro ao buscar histórico MPU");
       } finally {
-        if (alive && reqSeq.current === seq) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          timer = window.setTimeout(tick, pollMs) as unknown as number;
+        }
       }
-    })();
-
-    return () => {
-      alive = false;
     };
-  }, [id, since, limit, asc]);
+
+    tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [key, id, since, limit, asc, pollMs]);
 
   return { rows, loading, error };
 }
 
-// ===== Hook: último valor do MPU (usa GET /mpu/latest) =====
-export function useMpuLatest(id: string | null) {
+/* =========================
+ *  Último valor do MPU (polling leve)
+ * ========================= */
+export function useMpuLatest(id: string | number | null, pollMs = 1000) {
   const [sample, setSample] = useState<MpuSample | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState<boolean>(!!id);
   const [error, setError] = useState<string | null>(null);
-  const reqSeq = useRef(0);
 
   useEffect(() => {
-    if (!id) {
+    if (id == null) {
       setSample(null);
       setLoading(false);
       setError(null);
       return;
     }
 
-    const seq = ++reqSeq.current;
-    let alive = true;
+    let timer: number | null = null;
+    let cancelled = false;
 
-    (async () => {
+    const tick = async () => {
       try {
         setLoading(true);
-        const m = await getLatestMPU(id);
-        if (!alive || reqSeq.current !== seq) return;
-        setSample(normalizeMPU(m));
-        setError(null);
+        const apiId = coerceMpuIdForApi(id);
+        // getLatestMPU em src/lib/api.ts aceita (number | "MPUA1" | "MPUA2")
+        const m = await getLatestMPU(apiId);
+        if (!cancelled) {
+          setSample(m ? normalizeMPU(m) : null);
+          setError(null);
+        }
       } catch (e: any) {
-        if (!alive || reqSeq.current !== seq) return;
-        setError(e?.message ?? "Erro ao buscar último MPU");
+        if (!cancelled) setError(e?.message ?? "Erro ao buscar último MPU");
       } finally {
-        if (alive && reqSeq.current === seq) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          timer = window.setTimeout(tick, pollMs) as unknown as number;
+        }
       }
-    })();
-
-    return () => {
-      alive = false;
     };
-  }, [id]);
+
+    tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [id, pollMs]);
 
   return { sample, loading, error };
 }
 
-// ===== Hook: stream via WebSocket (/ws/mpu) =====
-export function useMpuStream(opts?: { id?: string; all?: boolean }) {
-  const [connected, setConnected] = useState(false);
-  const [last, setLast] = useState<MpuSample | null>(null);
-  const clientRef = useRef<WSClient | null>(null);
-
-  useEffect(() => {
-    // encerra conexão anterior (se existir)
-    clientRef.current?.close();
-
-    const client = openMpuWS({
-      id: opts?.id,
-      all: opts?.all ?? !opts?.id,
-      onOpen: () => setConnected(true),
-      onClose: () => setConnected(false),
-      onError: () => setConnected(false),
-      onMessage: (m: any) => {
-        // normaliza registro vindo do WS (ax_g/gx_dps → ax/gx, etc.)
-        if (m?.id && (m.ax !== undefined || m.ax_g !== undefined)) {
-          setLast(normalizeMPU(m));
-        }
-      },
-    });
-
-    clientRef.current = client;
-    return () => client.close();
-    // mudar id/all reinicia a conexão
-  }, [opts?.id, opts?.all]);
-
+/* =========================
+ *  Stub de stream (compat)
+ * ========================= */
+export function useMpuStream(_opts?: { id?: string | number; all?: boolean }) {
+  const [connected] = useState(false);
+  const [last] = useState<MpuSample | null>(null);
   return { connected, last };
 }

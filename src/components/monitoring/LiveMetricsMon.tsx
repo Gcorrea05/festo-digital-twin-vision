@@ -1,21 +1,33 @@
-// src/components/monitoring/LiveMetricsMon.tsx  (1/2)
+// src/components/monitoring/LiveMetricsMon.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { getHealth, getMpuLatest, getActuatorCpmFromHistory } from "@/lib/api";
+import { useLive } from "@/context/LiveContext";
+import { getMpuLatest } from "@/lib/api";
 
 type Props = { selectedId: 1 | 2 };
 
 const POLL_MS = 3000;
 
 const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
-  const [system, setSystem] = useState<string>("—");
-  const [cpm, setCpm] = useState<number | null>(null);
-  const [mpu, setMpu] = useState<{ ax?: number; ay?: number; az?: number } | null>(null);
+  const { snapshot } = useLive();
 
-  // tempos “últimos” — ainda sem endpoint específico
-  const [tOpenMs] = useState<number | null>(null);
-  const [tCloseMs] = useState<number | null>(null);
-  const [tCycleMs] = useState<number | null>(null);
+  // ------- SYSTEM --------
+  const systemText = useMemo<"OK" | "DEGRADED" | "OFFLINE" | "—">(() => {
+    const s = String(snapshot?.system?.status ?? "—").toLowerCase();
+    if (s === "ok") return "OK";
+    if (s === "degraded") return "DEGRADED";
+    if (s === "down" || s === "offline") return "OFFLINE";
+    return "—";
+  }, [snapshot]);
+
+  // ------- ACTUATOR / CPM --------
+  const cpm = useMemo<number | null>(() => {
+    const a = snapshot?.actuators?.find((x) => x.id === selectedId);
+    return a ? Number(a.cpm ?? 0) : null;
+  }, [snapshot, selectedId]);
+
+  // ------- MPU (apenas polling leve) --------
+  const [mpu, setMpu] = useState<{ ax?: number; ay?: number; az?: number } | null>(null);
 
   const vibOverall = useMemo(() => {
     if (!mpu) return null;
@@ -30,31 +42,38 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
     let alive = true;
 
     const tick = async () => {
-      // health
-      const h = await getHealth();
-      if (alive) setSystem(h?.status === "ok" ? "OK" : h?.status?.toUpperCase() || "—");
-
-      // cpm (60s via histórico do S2)
-      const c = await getActuatorCpmFromHistory(selectedId, 60);
-      if (alive) setCpm(c ?? null);
-
-      // mpu latest (id = "MPUA1"/"MPUA2")
-      const mid = selectedId === 1 ? "MPUA1" : "MPUA2";
-      const m = await getMpuLatest(mid);
-      if (alive) {
-        setMpu(
-          m ? { ax: m.ax_g ?? undefined, ay: m.ay_g ?? undefined, az: m.az_g ?? undefined } : null
-        );
+      try {
+        // mpu latest (id = "MPUA1"/"MPUA2")
+        const mid = selectedId === 1 ? "MPUA1" : "MPUA2";
+        const m = await getMpuLatest(mid).catch(() => null);
+        if (alive) {
+          setMpu(
+            m
+              ? {
+                  ax: (m as any).ax_g ?? (m as any).ax ?? undefined,
+                  ay: (m as any).ay_g ?? (m as any).ay ?? undefined,
+                  az: (m as any).az_g ?? (m as any).az ?? undefined,
+                }
+              : null
+          );
+        }
+      } catch {
+        // mantém último valor visível
+      } finally {
+        if (alive) setTimeout(tick, POLL_MS);
       }
     };
 
     tick();
-    const id = setInterval(tick, POLL_MS);
     return () => {
       alive = false;
-      clearInterval(id);
     };
   }, [selectedId]);
+
+  // Sem endpoints ainda para os tempos “últimos”
+  const tOpenMs: number | null = null;
+  const tCloseMs: number | null = null;
+  const tCycleMs: number | null = null;
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -78,10 +97,10 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
         </CardHeader>
         <CardContent>
           <div className="text-2xl font-semibold leading-none tracking-tight">
-            {system}
+            {systemText}
           </div>
           <p className="text-xs text-muted-foreground mt-1">
-            {system === "—" ? "sem registro de INICIA" : ""}
+            {systemText === "—" ? "sem registro de INICIA" : ""}
           </p>
         </CardContent>
       </Card>

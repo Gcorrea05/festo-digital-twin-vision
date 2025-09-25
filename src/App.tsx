@@ -7,6 +7,8 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 
 import { AuthProvider } from "./context/AuthContext";
 import { ThemeProvider } from "./context/ThemeContext";
+import { LiveProvider } from "@/context/LiveContext";
+import { ActuatorSelectionProvider } from "@/context/ActuatorSelectionContext";
 
 import Layout from "@/components/Layout";
 import Index from "@/pages/Index";
@@ -23,78 +25,65 @@ const App = () => (
     <AuthProvider>
       <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
         <TooltipProvider delayDuration={250}>
-          <BrowserRouter>
-            <Routes>
-              {/* Cada rota usa o seu Layout (que renderiza Header + Sidebar + children) */}
-              <Route
-                path="/"
-                element={
-                  <Layout
-                    title="Dashboard"
-                    description=""
-                  >
-                    <Index />
-                  </Layout>
-                }
-              />
-              <Route
-                path="/monitoring"
-                element={
-                  <Layout
-                    title="Monitoring"
-                    description=""
-                  >
-                    <Monitoring />
-                  </Layout>
-                }
-              />
-              <Route
-                path="/analytics"
-                element={
-                  <Layout
-                    title="Analytics"
-                    description=""
-                  >
-                    <Analytics />
-                  </Layout>
-                }
-              />
-              <Route
-                path="/alerts"
-                element={
-                  <Layout
-                    title="Alerts"
-                    description=""
-                  >
-                    <Alerts />
-                  </Layout>
-                }
-              />
-              <Route
-                path="/simulation"
-                element={
-                  <Layout
-                    title="Simulation"
-                    description=""
-                  >
-                    <Simulation />
-                  </Layout>
-                }
-              />
-              {/* 404 ainda mantém a Sidebar, pois usa o mesmo Layout */}
-              <Route
-                path="*"
-                element={
-                  <Layout
-                    title="Página não encontrada"
-                    description=""
-                  >
-                    <NotFound />
-                  </Layout>
-                }
-              />
-            </Routes>
-          </BrowserRouter>
+          {/* --- Providers globais para snapshot e atuador --- */}
+          <LiveProvider>
+            <ActuatorSelectionProvider>
+              <BrowserRouter>
+                <Routes>
+                  {/* Cada rota usa o seu Layout (que renderiza Header + Sidebar + children) */}
+                  <Route
+                    path="/"
+                    element={
+                      <Layout title="Dashboard" description="">
+                        <Index />
+                      </Layout>
+                    }
+                  />
+                  <Route
+                    path="/monitoring"
+                    element={
+                      <Layout title="Monitoring" description="">
+                        <Monitoring />
+                      </Layout>
+                    }
+                  />
+                  <Route
+                    path="/analytics"
+                    element={
+                      <Layout title="Analytics" description="">
+                        <Analytics />
+                      </Layout>
+                    }
+                  />
+                  <Route
+                    path="/alerts"
+                    element={
+                      <Layout title="Alerts" description="">
+                        <Alerts />
+                      </Layout>
+                    }
+                  />
+                  <Route
+                    path="/simulation"
+                    element={
+                      <Layout title="Simulation" description="">
+                        <Simulation />
+                      </Layout>
+                    }
+                  />
+                  {/* 404 ainda mantém a Sidebar, pois usa o mesmo Layout */}
+                  <Route
+                    path="*"
+                    element={
+                      <Layout title="Página não encontrada" description="">
+                        <NotFound />
+                      </Layout>
+                    }
+                  />
+                </Routes>
+              </BrowserRouter>
+            </ActuatorSelectionProvider>
+          </LiveProvider>
 
           <Toaster />
           <Sonner />
