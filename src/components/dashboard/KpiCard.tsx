@@ -15,18 +15,17 @@ type Props = {
   className?: string;
 };
 
-function badgeClass(sev: Severity = "gray") {
-  const base =
-    "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium";
+function dotClass(sev: Severity = "gray") {
+  const base = "inline-block h-2.5 w-2.5 rounded-full ring-2 ring-transparent";
   switch (sev) {
     case "green":
-      return `${base} bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300`;
+      return `${base} bg-emerald-500 dark:bg-emerald-400`;
     case "amber":
-      return `${base} bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300`;
+      return `${base} bg-amber-500 dark:bg-amber-400`;
     case "red":
-      return `${base} bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300`;
+      return `${base} bg-red-500 dark:bg-red-400`;
     default:
-      return `${base} bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200`;
+      return `${base} bg-zinc-400 dark:bg-zinc-500`;
   }
 }
 
@@ -62,7 +61,8 @@ export default function KpiCard({
           <CardTitle className="min-w-0 text-xs sm:text-sm font-medium text-zinc-600 dark:text-zinc-300 leading-tight truncate">
             {title}
           </CardTitle>
-          <span className={`shrink-0 ${badgeClass(severity)}`}>{severity}</span>
+          {/* Pontinho colorido (sem texto) */}
+          <span className={dotClass(severity)} aria-label={severity} title={severity} />
         </div>
       </CardHeader>
       <CardContent className="pt-0">
@@ -73,7 +73,11 @@ export default function KpiCard({
               {withUnit}
             </div>
           </div>
-          {trend ? <div className="w-20 sm:w-28 h-10 sm:h-12 flex items-center justify-end shrink-0">{trend}</div> : null}
+          {trend ? (
+            <div className="w-20 sm:w-28 h-10 sm:h-12 flex items-center justify-end shrink-0">
+              {trend}
+            </div>
+          ) : null}
         </div>
       </CardContent>
     </Card>

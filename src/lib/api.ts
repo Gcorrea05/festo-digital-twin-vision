@@ -1,8 +1,10 @@
-// src/lib/api.ts  (1/8)
+// src/lib/api.ts
 
-// Base da API
+// Base da API (compat: VITE_API_BASE ou VITE_API_URL)
 export const API_BASE =
-  (import.meta as any)?.env?.VITE_API_BASE || "http://localhost:8000";
+  (import.meta as any)?.env?.VITE_API_BASE ||
+  (import.meta as any)?.env?.VITE_API_URL ||
+  "http://localhost:8000";
 
 export function getApiBase() {
   return API_BASE;
@@ -14,6 +16,7 @@ export type AlertItem = {
   severity: "info" | "warning" | "critical";
   timestamp: string; // ISO
 };
+
 // Flags
 const MPU_DISABLED =
   String((import.meta as any)?.env?.VITE_DISABLE_MPU ?? "").toLowerCase() ===
@@ -71,7 +74,6 @@ function pickNum(v: any): number | null {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
-// src/lib/api.ts  (2/8)
 
 // ==== OPC helpers (robustos) ====
 
@@ -165,8 +167,6 @@ function normalizeOpcRows(payload: any): OPCHistoryRow[] {
 
 // Cache de caminho “que funcionou” por (act, facet)
 const opcPathCache = new Map<string, string>();
-// src/lib/api.ts  (3/8)
-
 // Monta um leque de caminhos/parametrizações “amplas” e compatíveis
 function buildOpcHistoryPathsWide(
   actuatorId: number,
@@ -294,7 +294,6 @@ async function getOPCHistorySafe(args: {
   // 2) nada deu: retorna vazio
   return [];
 }
-// src/lib/api.ts  (4/8)
 
 /* =========================================
  *  OPC HISTORY (assinatura antiga com fallback)
@@ -355,7 +354,6 @@ export async function getOpcHistoryByName(params: {
   });
   return fetchJson<OPCHistoryByNameRow[]>(`/opc/history?${qs.toString()}`);
 }
-// src/lib/api.ts  (5/8)
 
 /* =========================
  *  Aggregations (Analytics)
@@ -370,7 +368,6 @@ export type MinuteAgg = {
   cpm: number;
   vib_avg?: number | null;
 };
-
 export async function getMinuteAgg(
   act: "A1" | "A2",
   since: string
@@ -426,7 +423,6 @@ export async function getAlerts(): Promise<AlertItem[]> {
   }));
 }
 
-
 export function opcName(actuatorId: number, facet: "S1" | "S2") {
   return facet === "S1"
     ? `Recuado_${actuatorId}S1`
@@ -479,7 +475,6 @@ export async function getOpcLatestByActuatorFacet(
   if (!r) return null;
   return { ts_utc: r.ts, name, value_bool: r.value };
 }
-// src/lib/api.ts  (6/8)
 
 /* =========================
  *  MPU HISTORY (robusto) + “latest” via histórico
@@ -542,7 +537,6 @@ function buildMpuHistoryPaths(
     ...pp,
   ];
 }
-
 // Checa se existe pelo menos UMA rota de MPU disponível.
 async function ensureMpuAvailability(): Promise<"present" | "absent"> {
   if (mpuAvailability !== "unknown") return mpuAvailability;
@@ -572,7 +566,6 @@ function idVariants(id: number | "MPUA1" | "MPUA2") {
   const nid = typeof id === "number" ? id : qid === "MPUA1" ? 1 : 2;
   return { qid, nid };
 }
-// src/lib/api.ts  (7/8)
 
 export async function getMPUHistory(
   id: number | "MPUA1" | "MPUA2",
@@ -656,7 +649,6 @@ async function getMpuLatestViaHistory(
   }
   return null;
 }
-// src/lib/api.ts  (8/8)
 
 export async function getMpuLatest(
   id: number | "MPUA1" | "MPUA2"
@@ -747,7 +739,8 @@ export async function getMpuIds(): Promise<Array<string | number>> {
 }
 
 /* ==================================================
- *  CPM via histórico S2 (usa versão segura)
+ *  Ciclos via histórico S2 (conta bordas de subida)
+ *  Mantém nome antigo getActuatorCpmFromHistory p/ compat
  * ================================================== */
 export async function getActuatorCpmFromHistory(
   actuatorId: 1 | 2,
@@ -765,13 +758,16 @@ export async function getActuatorCpmFromHistory(
     for (let i = 1; i < rows.length; i++) {
       const prev = Number((rows[i - 1].value as any));
       const curr = Number((rows[i].value as any));
-      if (prev === 0 && curr === 1) edges++;
+      if (prev === 0 && curr === 1) edges++; // cada subida = 1 ciclo
     }
     return edges;
   } catch {
     return 0;
   }
 }
+
+/** Alias semântico: ciclos por atuador na janela (mesmo cálculo do CPM antigo) */
+export const getActuatorCyclesFromHistory = getActuatorCpmFromHistory;
 
 /* ==================================================
  *  Snapshot para LiveContext
@@ -782,36 +778,48 @@ export type LiveSnapshot = {
   actuators: Array<{
     id: 1 | 2;
     facets: { S1: boolean | null; S2: boolean | null };
-    cpm?: number | null;
+    cpm?: number | null;        // compat
+    cycles?: number | null;     // preferido
   }>;
 };
 
 export async function getLiveActuatorsState(): Promise<LiveSnapshot> {
-  const [health, a1s1, a1s2, a2s1, a2s2, cpm1, cpm2] = await Promise.all([
+  const [health, a1s1, a1s2, a2s1, a2s2, cyc1, cyc2] = await Promise.all([
     getHealth(),
     getOpcLatestViaHistory(1, "S1"),
     getOpcLatestViaHistory(1, "S2"),
     getOpcLatestViaHistory(2, "S1"),
     getOpcLatestViaHistory(2, "S2"),
-    getActuatorCpmFromHistory(1, 60),
-    getActuatorCpmFromHistory(2, 60),
+    getActuatorCyclesFromHistory(1, 60),
+    getActuatorCyclesFromHistory(2, 60),
   ]);
 
   return {
     ts: new Date().toISOString(),
     system: { status: (health?.status ?? "offline").toString() },
     actuators: [
-      { id: 1, facets: { S1: a1s1.value, S2: a1s2.value }, cpm: cpm1 ?? null },
-      { id: 2, facets: { S1: a2s1.value, S2: a2s2.value }, cpm: cpm2 ?? null },
+      {
+        id: 1,
+        facets: { S1: a1s1.value, S2: a1s2.value },
+        cycles: cyc1 ?? null,
+        cpm: cyc1 ?? null, // compat até migrarmos tudo no front
+      },
+      {
+        id: 2,
+        facets: { S1: a2s1.value, S2: a2s2.value },
+        cycles: cyc2 ?? null,
+        cpm: cyc2 ?? null,
+      },
     ],
   };
 }
+
 export async function getSystemStatus(): Promise<{
   components: {
     actuators?: string; sensors?: string; transmission?: string; control?: string;
   };
 }> {
-const data = await (async () => {
+  const data = await (async () => {
     try { return await fetchJson<any>("/api/system/status"); } catch {}
     try { return await fetchJson<any>("/system/status"); } catch {}
     return { components: {} };

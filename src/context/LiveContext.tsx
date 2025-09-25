@@ -13,10 +13,10 @@ import React, {
 
 import {
   getHealth,
-  getLiveActuatorsState, // traz system.status + facets/cpm por atuador (helper do api.ts)
+  getLiveActuatorsState, // traz system.status + facets/cpm/cycles por atuador (helper do api.ts)
   getMpuIds,
   getLatestMPU,
-  getSystemStatus,        // <- NOVO: status de componentes calculado no backend
+  getSystemStatus, // status de componentes calculado no backend
 } from "@/lib/api";
 
 export type LiveMode = "live" | "playback";
@@ -30,6 +30,9 @@ export type ActuatorSnapshot = {
   facets: Facets;
   cpm: number;
   rms: number;
+  // opcionais para contagem de ciclos (não afeta quem não usa)
+  cycles?: number;
+  totalCycles?: number;
 };
 
 export type Snapshot = {
@@ -55,12 +58,16 @@ export type Snapshot = {
     gz: number;
     temp_c: number;
   } | null;
+  // opcional para filtro relativo no Dashboard
+  selectedActuator?: 1 | 2;
 };
 
 type LiveContextValue = {
   snapshot: Snapshot | null;
   mode: LiveMode;
   setMode: (m: LiveMode) => void;
+  // novo: expõe setter do filtro (1|2|null para limpar)
+  setSelectedActuator: (id: 1 | 2 | null) => void;
 };
 
 const LiveContext = createContext<LiveContextValue | undefined>(undefined);
@@ -81,6 +88,7 @@ function normSystemStatus(s: any): "ok" | "down" | "unknown" {
   return "unknown";
 }
 
+// Regra sem transições: só aberto/fechado/indef/erro
 function decideFsmState(f: { S1: 0 | 1; S2: 0 | 1 }): string {
   const s1 = f.S1, s2 = f.S2;
   if (s1 === 1 && s2 === 0) return "fechado";
@@ -88,23 +96,25 @@ function decideFsmState(f: { S1: 0 | 1; S2: 0 | 1 }): string {
   if (s1 === 1 && s2 === 1) return "erro";
   return "indef";
 }
-
 export function LiveProvider({ children }: Props) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [mode, setMode] = useState<LiveMode>("live");
 
+  // estado de filtro por atuador (undefined = sem filtro)
+  const [selectedActuator, _setSelectedActuator] = useState<1 | 2 | undefined>(undefined);
+  const setSelectedActuator = (id: 1 | 2 | null) =>
+    _setSelectedActuator(id == null ? undefined : id);
+
   // Estados parciais para compor o snapshot
-  const [systemStatus, setSystemStatus] = useState<"ok" | "down" | "unknown">(
-    "unknown"
+  const [systemStatus, setSystemStatus] = useState<"ok" | "down" | "unknown">("unknown");
+  const [systemComponents, setSystemComponents] = useState<Snapshot["system"]["components"]>(
+    undefined
   );
-  const [systemComponents, setSystemComponents] = useState<
-    Snapshot["system"]["components"]
-  >(undefined);
   const [actuators, setActuators] = useState<ActuatorSnapshot[]>([]);
   const [mpu, setMpu] = useState<Snapshot["mpu"]>(null);
   const mpuChosenIdRef = useRef<string | null>(null);
 
-  // -------- Poll 1: System + Actuators + CPM (500 ms) --------
+  // -------- Poll 1: System + Actuators + Ciclos/CPM (500 ms) --------
   useEffect(() => {
     if (mode !== "live") return;
     let timer: number | null = null;
@@ -136,24 +146,28 @@ export function LiveProvider({ children }: Props) {
 
         const acts: ActuatorSnapshot[] = (live?.actuators ?? [])
           .map((a: any) => {
-            const id = Number(a?.id ?? 0);
+            const id = Number(a?.id ?? a?.actuator_id ?? 0);
             if (!id) return null;
 
-            // facets boolean|null -> 0|1
-            const s1b = a?.facets?.S1;
-            const s2b = a?.facets?.S2;
-            const facets: Facets = {
-              S1: (s1b === true ? 1 : s1b === false ? 0 : 0) as 0 | 1,
-              S2: (s2b === true ? 1 : s2b === false ? 0 : 0) as 0 | 1,
-            };
+            // facets boolean|null -> 0|1 (espera estrutura {S1,S2}; se vier recuado/avancado, fallback)
+            const s1b = a?.facets?.S1 ?? (a?.recuado ?? null);
+            const s2b = a?.facets?.S2 ?? (a?.avancado ?? null);
+            const to01 = (v: any) => (v === true || v === 1 ? 1 : v === false || v === 0 ? 0 : 0);
+
+            const facets: Facets = { S1: to01(s1b) as 0 | 1, S2: to01(s2b) as 0 | 1 };
+
+            // cycles/totalCycles se vierem; fallback para cpm (compat)
+            const cycles = Number((a?.cycles ?? a?.totalCycles ?? a?.cpm ?? 0) as number);
 
             return {
               id,
               ts: tsNow,
               fsm: { state: decideFsmState(facets) },
               facets,
-              cpm: Number(a?.cpm ?? 0),
+              cpm: Number(a?.cpm ?? cycles ?? 0),
               rms: 0,
+              cycles,
+              totalCycles: cycles,
             } as ActuatorSnapshot;
           })
           .filter(Boolean) as ActuatorSnapshot[];
@@ -181,7 +195,6 @@ export function LiveProvider({ children }: Props) {
       if (timer) clearTimeout(timer);
     };
   }, [mode]);
-
   // -------- Poll 2: MPU latest (1 s) --------
   useEffect(() => {
     if (mode !== "live") return;
@@ -197,9 +210,7 @@ export function LiveProvider({ children }: Props) {
           }
         }
         if (mpuChosenIdRef.current) {
-          const raw = await getLatestMPU(mpuChosenIdRef.current as any).catch(
-            () => null
-          );
+          const raw = await getLatestMPU(mpuChosenIdRef.current as any).catch(() => null);
           if (!cancelled) {
             if (!raw) {
               setMpu(null);
@@ -240,12 +251,20 @@ export function LiveProvider({ children }: Props) {
       system: { status: systemStatus, ts: Date.now(), components: systemComponents },
       actuators,
       mpu,
+      ...(selectedActuator ? { selectedActuator } : {}),
     };
     setSnapshot(snap);
-  }, [mode, systemStatus, systemComponents, actuators, mpu]);
+  }, [mode, systemStatus, systemComponents, actuators, mpu, selectedActuator]);
 
   return (
-    <LiveContext.Provider value={{ snapshot, mode, setMode }}>
+    <LiveContext.Provider
+      value={{
+        snapshot,
+        mode,
+        setMode,
+        setSelectedActuator, // expõe para 3D/LiveMetrics
+      }}
+    >
       {children}
     </LiveContext.Provider>
   );

@@ -3,20 +3,21 @@ import React, { useMemo } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { useLive } from "@/context/LiveContext";
 
-type EstadoStr = "AVANÇADO" | "RECUADO" | "TRANSIÇÃO" | "DESCONHECIDO";
+type EstadoStr = "ABERTO" | "FECHADO" | "ERRO" | "DESCONHECIDO";
 
 function estadoFromFacets(facets?: { S1?: 0 | 1; S2?: 0 | 1 } | null): EstadoStr {
   if (!facets) return "DESCONHECIDO";
-  if (facets.S2 === 1 && facets.S1 !== 1) return "AVANÇADO";
-  if (facets.S1 === 1 && facets.S2 !== 1) return "RECUADO";
-  if (facets.S1 == null && facets.S2 == null) return "DESCONHECIDO";
-  return "TRANSIÇÃO";
+  const R = facets.S1 ?? null; // Recuado_?S1
+  const A = facets.S2 ?? null; // Avancado_?S2
+  if (R === 1 && A === 0) return "FECHADO";
+  if (A === 1 && R === 0) return "ABERTO";
+  if (R === 1 && A === 1) return "ERRO";
+  return "DESCONHECIDO";
 }
 
 export default function LiveMetrics() {
   const { snapshot } = useLive();
 
-  // System
   const systemText = useMemo<"OK" | "DEGRADED" | "OFFLINE" | "…">(() => {
     const s = (snapshot?.system?.status ?? "unknown").toString().toLowerCase();
     if (s === "ok") return "OK";
@@ -25,38 +26,38 @@ export default function LiveMetrics() {
     return "…";
   }, [snapshot]);
 
-  // Actuators A1/A2
+  // Atuador selecionado (opcional, vindo do ThreeDModel)
+  const selected: 1 | 2 | null = (() => {
+    const sel = (snapshot as any)?.selectedActuator;
+    return sel === 1 || sel === 2 ? (sel as 1 | 2) : null;
+  })();
+
   const a1 = useMemo(() => snapshot?.actuators?.find((a) => a.id === 1) ?? null, [snapshot]);
   const a2 = useMemo(() => snapshot?.actuators?.find((a) => a.id === 2) ?? null, [snapshot]);
 
-  const rows = useMemo(
+  const rowsAll = useMemo(
     () =>
-      ([a1, a2] as const)
-        .map((a, idx) =>
-          a
-            ? {
-                id: (idx + 1) as 1 | 2,
-                state: estadoFromFacets(a.facets),
-                cpm: Number(a.cpm ?? 0),
-              }
-            : {
-                id: (idx + 1) as 1 | 2,
-                state: "DESCONHECIDO" as EstadoStr,
-                cpm: 0,
-              }
-        ),
+      ([a1, a2] as const).map((a, idx) => ({
+        id: (idx + 1) as 1 | 2,
+        state: a ? estadoFromFacets(a.facets) : ("DESCONHECIDO" as EstadoStr),
+        // ciclos continuam sendo usados apenas para o total
+        cycles: Number(((a as any)?.cycles ?? (a as any)?.totalCycles ?? a?.cpm ?? 0) as number),
+      })),
     [a1, a2]
   );
 
-  const totalCpm = useMemo(() => rows.reduce((acc, r) => acc + (r.cpm || 0), 0), [rows]);
+  const rows = useMemo(
+    () => (selected ? rowsAll.filter((r) => r.id === selected) : rowsAll),
+    [rowsAll, selected]
+  );
 
-  // MPU (se o LiveContext já tiver o último sample)
+  const totalCycles = useMemo(
+    () => rows.reduce((acc, r) => acc + (r.cycles || 0), 0),
+    [rows]
+  );
+
   const mpu = snapshot?.mpu
-    ? {
-        ax: snapshot.mpu.ax,
-        ay: snapshot.mpu.ay,
-        az: snapshot.mpu.az,
-      }
+    ? { ax: snapshot.mpu.ax, ay: snapshot.mpu.ay, az: snapshot.mpu.az }
     : null;
 
   return (
@@ -72,20 +73,18 @@ export default function LiveMetrics() {
           <p className="text-lg font-bold">{systemText}</p>
         </div>
 
-        {/* CPM total */}
+        {/* Total de Ciclos (relativo ao filtro) */}
         <div>
-          <p className="text-sm text-muted-foreground">Total CPM</p>
-          <p className="text-lg font-bold">{totalCpm}</p>
+          <p className="text-sm text-muted-foreground">Total de Ciclos</p>
+          <p className="text-lg font-bold">{totalCycles}</p>
         </div>
 
-        {/* Atuadores */}
+        {/* Atuadores (sem “— X ciclos”) */}
         <div className="sm:col-span-3">
           <p className="text-sm text-muted-foreground">Actuators</p>
           <ul className="text-sm space-y-1">
             {rows.map((a) => (
-              <li key={a.id}>
-                AT{a.id}: {a.state} — {a.cpm ?? "—"} CPM
-              </li>
+              <li key={a.id}>AT{a.id}: {a.state}</li>
             ))}
           </ul>
         </div>

@@ -172,10 +172,9 @@ function AutoFit({
   }, [controls, sphere, distances, onFit]);
   return null;
 }
-
 /** ---------- Principal ---------- */
 export default function ThreeDModel() {
-  const { snapshot } = useLive();
+  const { snapshot, setSelectedActuator } = useLive(); // integra filtro relativo
   const { setSelectedId } = useActuatorSelection();
 
   // índice do modelo (1 ou 2)
@@ -191,8 +190,15 @@ export default function ThreeDModel() {
   const { last: lastS1 } = useOpcStream({ name: s1Name });
   const { last: lastS2 } = useOpcStream({ name: s2Name });
 
-  // manter seleção global do atuador (outros cards usam)
-  useEffect(() => setSelectedId(modelIndex), [modelIndex, setSelectedId]);
+  // manter seleção global (contexts): 3D seleciona atuador e dashboard filtra
+  useEffect(() => {
+    setSelectedId(modelIndex);
+    setSelectedActuator(modelIndex);
+    return () => {
+      // opcional: não limpar filtro no unmount; se quiser limpar, descomente:
+      // setSelectedActuator(null);
+    };
+  }, [modelIndex, setSelectedId, setSelectedActuator]);
 
   // facets vindas do snapshot + overrides do stream
   const facetsFromSnapshot = useMemo(() => {

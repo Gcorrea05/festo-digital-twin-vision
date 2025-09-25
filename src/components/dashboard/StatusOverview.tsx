@@ -6,26 +6,28 @@ import { useLive } from "@/context/LiveContext";
 import SystemStatusPanel from "@/components/monitoring/SystemStatusPanel";
 import { rules, type SystemStatus } from "@/config/healthRules";
 
-type EstadoStr = "AVANÇADO" | "RECUADO" | "TRANSIÇÃO" | "DESCONHECIDO" | "...";
+type EstadoStr = "ABERTO" | "FECHADO" | "ERRO" | "DESCONHECIDO" | "...";
 
 function estadoFromFacets(facets?: { S1?: 0 | 1; S2?: 0 | 1 } | null): EstadoStr {
   if (!facets) return "DESCONHECIDO";
-  if (facets.S2 === 1 && facets.S1 !== 1) return "AVANÇADO";
-  if (facets.S1 === 1 && facets.S2 !== 1) return "RECUADO";
-  if (facets.S1 == null && facets.S2 == null) return "DESCONHECIDO";
-  return "TRANSIÇÃO";
+  const s1 = facets.S1 ?? null; // Recuado
+  const s2 = facets.S2 ?? null; // Avançado
+  if (s1 === 1 && s2 === 0) return "FECHADO";
+  if (s2 === 1 && s1 === 0) return "ABERTO";
+  if (s1 === 1 && s2 === 1) return "ERRO";
+  return "DESCONHECIDO";
 }
 
 function estadoSeverity(estado: EstadoStr): Severity {
-  if (estado === "AVANÇADO" || estado === "RECUADO") return "green";
-  if (estado === "TRANSIÇÃO") return "amber";
-  if (estado === "DESCONHECIDO") return "gray";
+  if (estado === "ABERTO" || estado === "FECHADO") return "green";
+  if (estado === "ERRO") return "red";
   return "gray";
 }
 
-function cpmSeverity(cpm: number): Severity {
-  if (cpm >= rules.cpm.greenMin) return "green";
-  if (cpm >= rules.cpm.amberMin) return "amber";
+function cyclesSeverity(cycles: number): Severity {
+  // Reaproveita limiares de cpm nas regras enquanto não definimos outros
+  if (cycles >= rules.cpm.greenMin) return "green";
+  if (cycles >= rules.cpm.amberMin) return "amber";
   return "red";
 }
 
@@ -40,10 +42,9 @@ function sinceTs(ts?: string | null): string {
 export default function StatusOverview() {
   const { snapshot } = useLive();
 
-  // ---------------- Sistema ----------------
+  // -------- Sistema --------
   const statusSistema: SystemStatus = useMemo(() => {
     const raw = (snapshot?.system?.status ?? "unknown").toString().toLowerCase();
-    // aceitamos "ok" | "degraded" | "offline"; se backend usar "down", tratamos como "offline"
     if (raw === "ok" || raw === "degraded" || raw === "offline") return raw as SystemStatus;
     if (raw === "down") return "offline";
     return "unknown";
@@ -58,55 +59,50 @@ export default function StatusOverview() {
 
   const sevSistema: Severity = rules.systemToSeverity(statusSistema) as Severity;
 
-  // ---------------- Atuadores A1 / A2 ----------------
+  // -------- Atuadores --------
+  const selected: 1 | 2 | null = (() => {
+    const sel = (snapshot as any)?.selectedActuator;
+    return sel === 1 || sel === 2 ? (sel as 1 | 2) : null;
+  })();
+
   const a1 = useMemo(() => snapshot?.actuators?.find((a) => a.id === 1) ?? null, [snapshot]);
   const a2 = useMemo(() => snapshot?.actuators?.find((a) => a.id === 2) ?? null, [snapshot]);
 
-  const estadoA1 = useMemo<EstadoStr>(() => (snapshot ? estadoFromFacets(a1?.facets) : "..."), [snapshot, a1]);
-  const estadoA2 = useMemo<EstadoStr>(() => (snapshot ? estadoFromFacets(a2?.facets) : "..."), [snapshot, a2]);
-
-  const sevEstadoA1 = estadoSeverity(estadoA1);
-  const sevEstadoA2 = estadoSeverity(estadoA2);
-
-  const cpmA1 = Number.isFinite(Number(a1?.cpm)) ? Number(a1?.cpm) : 0;
-  const cpmA2 = Number.isFinite(Number(a2?.cpm)) ? Number(a2?.cpm) : 0;
-
-  const sevCpmA1 = cpmSeverity(cpmA1);
-  const sevCpmA2 = cpmSeverity(cpmA2);
-
-  const tempoA1 = sinceTs((a1 as any)?.ts);
-  const tempoA2 = sinceTs((a2 as any)?.ts);
+  const list = useMemo(() => {
+    const base = [
+      { id: 1 as 1 | 2, row: a1 },
+      { id: 2 as 1 | 2, row: a2 },
+    ];
+    return selected ? base.filter((x) => x.id === selected) : base;
+  }, [a1, a2, selected]);
 
   return (
     <div className="space-y-8">
-      {/* KPIs topo — sistema + A1 + A2 */}
+      {/* KPIs topo — Sistema + Atuadores (filtrados se houver seleção) */}
       <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-4">
-        {/* Sistema */}
         <KpiCard title="STATUS DO SISTEMA" value={statusSistemaText} severity={sevSistema} />
 
-        {/* A1 - Estado */}
-        <KpiCard title="ESTADO ATUAL (A1)" value={estadoA1} severity={sevEstadoA1} />
+        {list.map(({ id, row }) => {
+          const estado = estadoFromFacets(row?.facets) as EstadoStr;
+          const sevEstado = estadoSeverity(estado);
+          const cycles = Number((row as any)?.cycles ?? (row as any)?.totalCycles ?? row?.cpm ?? 0);
+          const sevCycles = cyclesSeverity(cycles);
+          const tempo = sinceTs((row as any)?.ts);
 
-        {/* A1 - CPM */}
-        <KpiCard title="CPM (A1)" value={cpmA1} unit="ciclos/min" severity={sevCpmA1} decimals={0} />
+          return (
+            <React.Fragment key={id}>
+              <KpiCard title={`ESTADO ATUAL (A${id})`} value={estado} severity={sevEstado} />
+              <KpiCard title={`CICLOS (A${id})`} value={cycles} unit="ciclos" severity={sevCycles} decimals={0} />
+              <KpiCard title={`ÚLTIMO EVENTO (A${id})`} value={tempo} severity="gray" />
+            </React.Fragment>
+          );
+        })}
 
-        {/* A1 - Último evento */}
-        <KpiCard title="ÚLTIMO EVENTO (A1)" value={tempoA1} severity="gray" />
-
-        {/* A2 - Estado */}
-        <KpiCard title="ESTADO ATUAL (A2)" value={estadoA2} severity={sevEstadoA2} />
-
-        {/* A2 - CPM */}
-        <KpiCard title="CPM (A2)" value={cpmA2} unit="ciclos/min" severity={sevCpmA2} decimals={0} />
-
-        {/* A2 - Último evento */}
-        <KpiCard title="ÚLTIMO EVENTO (A2)" value={tempoA2} severity="gray" />
-
-        {/* Espaço reservado (ex.: OEE/meta futura) */}
+        {/* Espaço reservado quando grade precisar completar (mantido) */}
         <Card className="h-full w-full min-w-0 p-4 hidden xl:block" />
       </div>
 
-      {/* System Status detalhado (componentes) diretamente do backend */}
+      {/* Painel detalhado de componentes do sistema (backend) */}
       <SystemStatusPanel />
     </div>
   );
