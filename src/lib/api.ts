@@ -826,3 +826,21 @@ export async function getSystemStatus(): Promise<{
   })();
   return data ?? { components: {} };
 }
+export async function getActuatorsState() {
+  const r = await fetch("/api/live/actuators/state");
+  if (!r.ok) throw new Error("failed to fetch actuators state");
+  return r.json() as Promise<{
+    ts: string | null,
+    actuators: { id: string; state: "AVANÇADO" | "RECUADO" | "TRANSIÇÃO" | "DESCONHECIDO" }[]
+  }>;
+}
+
+export async function getCyclesTotal() {
+  const r = await fetch("/api/live/cycles/total");
+  if (!r.ok) throw new Error("failed to fetch cycles total");
+  return r.json() as Promise<{
+    total: number;
+    actuators: { actuator_id: number; cycles: number; last_state: string; since: string }[];
+    ts: string;
+  }>;
+}
