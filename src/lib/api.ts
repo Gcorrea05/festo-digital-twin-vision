@@ -17,6 +17,22 @@ export type AlertItem = {
   timestamp: string; // ISO
 };
 
+// --- LATCHED STATES (novos) ---
+export type StableState = "RECUADO" | "AVANÇADO";
+export type PendingTarget = "AV" | "REC" | null;
+export type Fault = "NONE" | "FAULT_TIMEOUT" | "FAULT_SENSORS_CONFLICT";
+
+export type LatchedActuator = {
+  actuator_id: 1 | 2;
+  state: StableState | "DESCONHECIDO";
+  pending: PendingTarget;
+  fault: Fault;
+  elapsed_ms: number;
+  started_at: string | null;
+};
+export type LatchedResp = { ts: string; actuators: LatchedActuator[] };
+
+
 // Flags
 const MPU_DISABLED =
   String((import.meta as any)?.env?.VITE_DISABLE_MPU ?? "").toLowerCase() ===
@@ -826,14 +842,41 @@ export async function getSystemStatus(): Promise<{
   })();
   return data ?? { components: {} };
 }
+// SUBSTITUA a função existente por esta versão compatível
 export async function getActuatorsState() {
-  const r = await fetch("/api/live/actuators/state");
-  if (!r.ok) throw new Error("failed to fetch actuators state");
-  return r.json() as Promise<{
-    ts: string | null,
-    actuators: { id: string; state: "AVANÇADO" | "RECUADO" | "TRANSIÇÃO" | "DESCONHECIDO" }[]
-  }>;
+  const bust = Date.now();
+  try {
+    const r = await fetch(`${API_BASE}/api/live/actuators/state?since_ms=8000&_=${bust}`, {
+      headers: { "Accept": "application/json" },
+      cache: "no-store",
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    // normaliza para o formato que seu LiveMetrics já espera
+    const mapped = (data?.actuators ?? []).map((a: any) => ({
+      id: String(a.actuator_id ?? a.id),
+      state: ((): "AVANÇADO" | "RECUADO" | "DESCONHECIDO" => {
+        const s = String(a.state ?? "").toUpperCase();
+        return s === "AVANÇADO" || s === "RECUADO" ? (s as any) : "DESCONHECIDO";
+      })(),
+      // extras (opcional)
+      pending: a.pending ?? null,
+      fault: a.fault ?? "NONE",
+      elapsed_ms: Number(a.elapsed_ms ?? 0),
+      started_at: a.started_at ?? null,
+    }));
+    return { ts: data?.ts ?? null, actuators: mapped };
+  } catch (e) {
+    // fallback para compat (se você ainda tem o backend antigo)
+    const r = await fetch(`${API_BASE}/api/live/actuators/state?_=${bust}`, { cache: "no-store" });
+    if (!r.ok) throw new Error("failed to fetch actuators state");
+    return r.json() as Promise<{
+      ts: string | null,
+      actuators: { id: string; state: "AVANÇADO" | "RECUADO" | "TRANSIÇÃO" | "DESCONHECIDO" }[]
+    }>;
+  }
 }
+
 
 export async function getCyclesTotal() {
   const r = await fetch("/api/live/cycles/total");
@@ -843,4 +886,8 @@ export async function getCyclesTotal() {
     actuators: { actuator_id: number; cycles: number; last_state: string; since: string }[];
     ts: string;
   }>;
+}
+
+export async function getLatchedActuators(sinceMs = 8000): Promise<LatchedResp> {
+  return fetchJson<LatchedResp>(`/api/live/actuators/state?since_ms=${sinceMs}`);
 }
