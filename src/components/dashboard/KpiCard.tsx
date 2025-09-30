@@ -1,83 +1,76 @@
-// src/components/dashboard/KpiCard.tsx
-import React from "react";
+// src/components/dashboard/LiveMetricsCard.tsx
+import React, { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { useLive } from "@/context/LiveContext";
 
-export type Severity = "green" | "amber" | "red" | "gray";
-
-type Props = {
-  title: string;
-  value?: number | string | null;
-  unit?: string;
-  severity?: Severity;
-  trend?: React.ReactNode;
-  loading?: boolean;
-  decimals?: number;
-  className?: string;
-};
-
-function dotClass(sev: Severity = "gray") {
-  const base = "inline-block h-2.5 w-2.5 rounded-full ring-2 ring-transparent";
-  switch (sev) {
-    case "green":
-      return `${base} bg-emerald-500 dark:bg-emerald-400`;
-    case "amber":
-      return `${base} bg-amber-500 dark:bg-amber-400`;
-    case "red":
-      return `${base} bg-red-500 dark:bg-red-400`;
-    default:
-      return `${base} bg-zinc-400 dark:bg-zinc-500`;
-  }
+function stateFromFacets(facets?: { S1: 0 | 1; S2: 0 | 1 }): "ABERTO" | "RECUADO" | "—" {
+  if (!facets) return "—";
+  const { S1, S2 } = facets;
+  if (S1 === 1 && S2 === 0) return "RECUADO";
+  if (S2 === 1 && S1 === 0) return "ABERTO";
+  return "—"; // remove outros estados
 }
 
-function formatValue(value?: number | string | null, decimals = 2): string {
-  if (value === null || value === undefined) return "—";
-  if (typeof value === "number") {
-    const fixed = value.toFixed(decimals);
-    return parseFloat(fixed).toString();
-  }
-  return String(value);
-}
+export default function LiveMetricsCard() {
+  const { snapshot } = useLive();
 
-export default function KpiCard({
-  title,
-  value = null,
-  unit,
-  severity = "gray",
-  trend,
-  loading = false,
-  decimals = 2,
-  className = "",
-}: Props) {
-  const display = loading ? "…" : formatValue(value, decimals);
-  const withUnit =
-    display !== "—" && unit ? (
-      <span className="text-zinc-400 dark:text-zinc-500 ml-1">{unit}</span>
-    ) : null;
+  const selectedIds = useMemo<(1 | 2)[]>(() => {
+    const sel = snapshot?.selectedActuator;
+    if (sel === 1 || sel === 2) return [sel];
+    return [1, 2]; // se nada selecionado no 3D, mostra os dois
+  }, [snapshot?.selectedActuator]);
+
+  const rows = useMemo(() => {
+    const list = snapshot?.actuators ?? [];
+    return selectedIds
+      .map((id) => list.find((a) => a.id === id))
+      .filter(Boolean)
+      .map((a) => ({
+        id: a!.id as 1 | 2,
+        state: stateFromFacets(a!.facets),
+      }));
+  }, [snapshot?.actuators, selectedIds]);
+
+  const systemText = useMemo(() => {
+    const s = String(snapshot?.system?.status ?? "—").toLowerCase();
+    if (s === "ok") return "OK";
+    if (s === "degraded") return "DEGRADED";
+    if (s === "down" || s === "offline") return "OFFLINE";
+    return "…";
+  }, [snapshot?.system?.status]);
+
+  const totalCycles = 0; // se você tiver a fonte, troque aqui
 
   return (
-    <Card className={`h-full w-full min-w-0 ${className}`}>
-      <CardHeader className="pb-2">
-        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2">
-          <CardTitle className="min-w-0 text-xs sm:text-sm font-medium text-zinc-600 dark:text-zinc-300 leading-tight truncate">
-            {title}
-          </CardTitle>
-          {/* Pontinho colorido (sem texto) */}
-          <span className={dotClass(severity)} aria-label={severity} title={severity} />
-        </div>
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-lg">Live Metrics (último valor gravado)</CardTitle>
       </CardHeader>
-      <CardContent className="pt-0">
-        <div className="flex items-end justify-between gap-4">
-          <div className="flex-1 min-w-0">
-            <div className="text-base sm:text-lg md:text-2xl font-semibold tracking-tight truncate">
-              {display}
-              {withUnit}
-            </div>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-2 gap-2 text-sm">
+          <div className="text-muted-foreground">System</div>
+          <div className="font-medium">{systemText}</div>
+          <div className="text-muted-foreground">Total de Ciclos</div>
+          <div className="font-medium">{totalCycles}</div>
+        </div>
+
+        <div className="pt-2">
+          <div className="text-sm text-muted-foreground mb-2">Actuators</div>
+          <div className="flex flex-col gap-2">
+            {rows.map((r) => (
+              <div key={r.id} className="flex items-center gap-3">
+                <div className="w-12 text-xs font-semibold">AT{r.id}:</div>
+                {/* só uma tag com ABERTO/RECUADO/— */}
+                <Badge variant="secondary" className="uppercase">
+                  {r.state}
+                </Badge>
+              </div>
+            ))}
+            {rows.length === 0 && (
+              <div className="text-xs text-muted-foreground">Nenhum atuador selecionado.</div>
+            )}
           </div>
-          {trend ? (
-            <div className="w-20 sm:w-28 h-10 sm:h-12 flex items-center justify-end shrink-0">
-              {trend}
-            </div>
-          ) : null}
         </div>
       </CardContent>
     </Card>

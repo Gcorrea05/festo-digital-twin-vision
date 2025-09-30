@@ -1,4 +1,3 @@
-// src/pages/Monitoring.tsx
 import React from "react";
 import SystemStatusPanel from "@/components/monitoring/SystemStatusPanel";
 import LiveMetricsMon from "@/components/monitoring/LiveMetricsMon";

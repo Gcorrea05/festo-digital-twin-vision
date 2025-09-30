@@ -4,14 +4,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useLive } from "@/context/LiveContext";
 import { getMpuLatest } from "@/lib/api";
 
-type Props = { selectedId: 1 | 2 };
-
 const POLL_MS = 3000;
 
-const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
+const LiveMetricsMon: React.FC = () => {
   const { snapshot } = useLive();
+  const selectedId: 1 | 2 = (snapshot?.selectedActuator as 1 | 2) ?? 1; // default 1
 
-  // ------- SYSTEM --------
   const systemText = useMemo<"OK" | "DEGRADED" | "OFFLINE" | "—">(() => {
     const s = String(snapshot?.system?.status ?? "—").toLowerCase();
     if (s === "ok") return "OK";
@@ -20,13 +18,11 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
     return "—";
   }, [snapshot]);
 
-  // ------- ACTUATOR / CPM --------
   const cpm = useMemo<number | null>(() => {
     const a = snapshot?.actuators?.find((x) => x.id === selectedId);
     return a ? Number(a.cpm ?? 0) : null;
   }, [snapshot, selectedId]);
 
-  // ------- MPU (apenas polling leve) --------
   const [mpu, setMpu] = useState<{ ax?: number; ay?: number; az?: number } | null>(null);
 
   const vibOverall = useMemo(() => {
@@ -40,10 +36,8 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
 
   useEffect(() => {
     let alive = true;
-
     const tick = async () => {
       try {
-        // mpu latest (id = "MPUA1"/"MPUA2")
         const mid = selectedId === 1 ? "MPUA1" : "MPUA2";
         const m = await getMpuLatest(mid).catch(() => null);
         if (alive) {
@@ -57,31 +51,24 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
               : null
           );
         }
-      } catch {
-        // mantém último valor visível
       } finally {
         if (alive) setTimeout(tick, POLL_MS);
       }
     };
-
     tick();
     return () => {
       alive = false;
     };
   }, [selectedId]);
 
-  // Sem endpoints ainda para os tempos “últimos”
   const tOpenMs: number | null = null;
   const tCloseMs: number | null = null;
   const tCycleMs: number | null = null;
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-      {/* CPM (1 min) */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">CPM (1 min)</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle className="text-base">CPM (1 min)</CardTitle></CardHeader>
         <CardContent>
           <div className="text-2xl font-semibold leading-none tracking-tight">
             {cpm ?? "—"}
@@ -90,26 +77,15 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
         </CardContent>
       </Card>
 
-      {/* Sistema Ligado */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Sistema Ligado</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle className="text-base">Sistema Ligado</CardTitle></CardHeader>
         <CardContent>
-          <div className="text-2xl font-semibold leading-none tracking-tight">
-            {systemText}
-          </div>
-          <p className="text-xs text-muted-foreground mt-1">
-            {systemText === "—" ? "sem registro de INICIA" : ""}
-          </p>
+          <div className="text-2xl font-semibold leading-none tracking-tight">{systemText}</div>
         </CardContent>
       </Card>
 
-      {/* Vibration (overall) */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Vibration (overall)</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle className="text-base">Vibration (overall)</CardTitle></CardHeader>
         <CardContent>
           <div className="text-2xl font-semibold leading-none tracking-tight">
             {vibOverall != null ? vibOverall.toFixed(2) : "—"}
@@ -118,40 +94,19 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
         </CardContent>
       </Card>
 
-      {/* DTabre (últ.) */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">DTabre (últ.)</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-semibold leading-none tracking-tight">
-            {tOpenMs != null ? `${tOpenMs} ms` : "—"}
-          </div>
-        </CardContent>
+        <CardHeader><CardTitle className="text-base">DTabre (últ.)</CardTitle></CardHeader>
+        <CardContent><div className="text-2xl font-semibold leading-none tracking-tight">{tOpenMs != null ? `${tOpenMs} ms` : "—"}</div></CardContent>
       </Card>
 
-      {/* DTfecha (últ.) */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">DTfecha (últ.)</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-semibold leading-none tracking-tight">
-            {tCloseMs != null ? `${tCloseMs} ms` : "—"}
-          </div>
-        </CardContent>
+        <CardHeader><CardTitle className="text-base">DTfecha (últ.)</CardTitle></CardHeader>
+        <CardContent><div className="text-2xl font-semibold leading-none tracking-tight">{tCloseMs != null ? `${tCloseMs} ms` : "—"}</div></CardContent>
       </Card>
 
-      {/* DTciclo (últ.) */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">DTciclo (últ.)</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-semibold leading-none tracking-tight">
-            {tCycleMs != null ? `${tCycleMs} ms` : "—"}
-          </div>
-        </CardContent>
+        <CardHeader><CardTitle className="text-base">DTciclo (últ.)</CardTitle></CardHeader>
+        <CardContent><div className="text-2xl font-semibold leading-none tracking-tight">{tCycleMs != null ? `${tCycleMs} ms` : "—"}</div></CardContent>
       </Card>
     </div>
   );

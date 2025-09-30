@@ -1,6 +1,4 @@
 // src/context/LiveContext.tsx
-// Contexto global para snapshot live/playback
-// POLLING-ONLY (sem WebSocket) + system.components do backend
 
 import React, {
   createContext,
@@ -16,7 +14,6 @@ import {
   getLiveActuatorsState, // traz system.status + facets/cpm/cycles por atuador (helper do api.ts)
   getMpuIds,
   getLatestMPU,
-  getSystemStatus, // status de componentes calculado no backend
 } from "@/lib/api";
 
 export type LiveMode = "live" | "playback";
@@ -132,14 +129,6 @@ export function LiveProvider({ children }: Props) {
           };
         });
 
-        // componentes de sistema calculados no backend
-        let comps: Snapshot["system"]["components"] = undefined;
-        try {
-          const sys = await getSystemStatus();
-          comps = sys?.components ?? undefined;
-        } catch {
-          comps = undefined;
-        }
 
         const sys = normSystemStatus(live?.system?.status);
         const tsNow = new Date().toISOString();
@@ -174,7 +163,7 @@ export function LiveProvider({ children }: Props) {
 
         if (!cancelled) {
           setSystemStatus(sys);
-          setSystemComponents(comps);
+          setSystemComponents(undefined);
           setActuators(acts);
         }
       } catch {

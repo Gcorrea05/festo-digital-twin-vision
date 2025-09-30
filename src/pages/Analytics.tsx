@@ -1,4 +1,3 @@
-// src/pages/Analytics.tsx — Bloco 1/3
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -161,7 +160,7 @@ const Analytics: React.FC = () => {
 
   const dataAgg = act === 1 ? aggA1 : aggA2;
   const colorAct = act === 1 ? C.A1 : C.A2;
-// src/pages/Analytics.tsx — Bloco 2/3
+
   // ===== UI =====
   return (
     <div className="max-w-[1400px] mx-auto px-2 sm:px-4">
