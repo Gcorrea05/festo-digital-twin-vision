@@ -19,6 +19,20 @@ export async function fetchJson<T = any>(path: string, init?: RequestInit): Prom
   return (await res.json()) as T;
 }
 
+// POST helper (JSON)
+export async function postJson<T = any>(path: string, body: any, init?: RequestInit): Promise<T> {
+  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+    cache: "no-store",
+    body: JSON.stringify(body ?? {}),
+    ...init,
+  });
+  if (!res.ok) throw new Error(`API ${res.status} ${res.statusText} on ${url}`);
+  return (await res.json()) as T;
+}
+
 // ======================
 // Tipos (somente os usados)
 // ======================
@@ -39,7 +53,6 @@ export type LatchedResp = {
   ts: string; // ISO
   actuators: LatchedActuator[];
 };
-
 export type CyclesTotalResp = {
   total: number;
   actuators: {
@@ -94,7 +107,6 @@ export type SystemStatusResp = {
 };
 
 export type HealthResp = { status: string; db_time?: string | null } | null;
-
 // ======================
 // Dashboard (Live / etc.)
 // ======================
@@ -114,7 +126,6 @@ export async function getCyclesTotal(): Promise<CyclesTotalResp> {
 // ======================
 // Monitoring
 // ======================
-
 export async function getCyclesRate60s(windowS: number = 60): Promise<CyclesRateResp> {
   return fetchJson<CyclesRateResp>(`/api/live/cycles/rate?window_s=${windowS}`);
 }
@@ -126,13 +137,11 @@ export async function getVibrationLive(windowS: number = 2): Promise<VibrationLi
 export async function getActuatorTimings(): Promise<ActuatorTimingsResp> {
   return fetchJson<ActuatorTimingsResp>(`/api/live/actuators/timings`);
 }
-
 // ======================
 // System status / Health
 // ======================
-
-// Seu backend atual NÃO expõe /api/system/status; mantemos a função por compat.
 export async function getSystemStatus(): Promise<SystemStatusResp> {
+  // backend não expõe /api/system/status; mantemos compat.
   return {};
 }
 
@@ -180,8 +189,6 @@ export async function getOPCHistory(params: {
     return getOPCHistoryByName(name, params.since, !!params.asc, 20000);
   }
 }
-
-// compat por name direto (useOpcStream etc.)
 export async function getOPCHistoryByName(
   name: string,
   since: string = "-10m",
@@ -232,7 +239,6 @@ export async function getMinuteAgg(act: "A1" | "A2", since: string): Promise<Min
     }
   }
 }
-
 // ======================
 // LiveContext helpers (system + actuators + mpu)
 // ======================
@@ -242,7 +248,6 @@ export async function getLiveActuatorsState(): Promise<{
   actuators: any[];
 }> {
   try {
-    // endpoint válido nos seus logs
     const data = await fetchJson<any>("/api/live/actuators/state");
     const status = String(data?.system?.status ?? "unknown");
     return {
@@ -251,7 +256,6 @@ export async function getLiveActuatorsState(): Promise<{
       actuators: Array.isArray(data?.actuators) ? data.actuators : [],
     };
   } catch {
-    // fallback: health + tentativa de pegar "state"
     try {
       const raw = await getActuatorsState();
       const h = await getHealth().catch(() => ({ status: "offline" } as any));
@@ -281,7 +285,6 @@ export async function getMpuIds(): Promise<Array<string | number>> {
     }
   }
 }
-
 // ---- MPU: último valor (via history limit=1) ----
 export type MpuLatestCompat = {
   ts_utc: string;
@@ -295,7 +298,7 @@ export type MpuLatestCompat = {
 
 export async function getLatestMPU(id: number | "MPUA1" | "MPUA2" | string): Promise<MpuLatestCompat | null> {
   const asStr = String(id);
-  const qs = new URLSearchParams({ id: asStr, since: "-30m", limit: "1" }); // pega o mais recente
+  const qs = new URLSearchParams({ id: asStr, since: "-30m", limit: "1" });
   let raw: any;
   try {
     raw = await fetchJson<any>(`/mpu/history?${qs.toString()}`);
@@ -337,7 +340,6 @@ export async function getLatestMPU(id: number | "MPUA1" | "MPUA2" | string): Pro
   };
 }
 export const getMpuLatest = getLatestMPU; // alias
-
 // ==== MPU: histórico (hooks/telas antigas) ====
 export type MpuHistoryRow = {
   ts: string;
@@ -381,3 +383,83 @@ export async function getMPUHistory(
   }));
 }
 export const getMpuHistory = getMPUHistory;
+// --- Tipos comuns para MPU "latest" robusto ---
+export type MpuSample = {
+  ts: string;     // ISO
+  ax?: number;
+  ay?: number;
+  az?: number;
+  gx?: number;
+  gy?: number;
+  gz?: number;
+};
+
+// Normalização de payload (qualquer shape -> MpuSample)
+function normalizeMpuSample(raw: any): MpuSample | null {
+  if (!raw) return null;
+  const ts = String(raw.ts_utc ?? raw.ts ?? raw.timestamp ?? raw.time ?? new Date().toISOString());
+  const ax = raw.ax_g ?? raw.ax ?? raw.x;
+  const ay = raw.ay_g ?? raw.ay ?? raw.y;
+  const az = raw.az_g ?? raw.az ?? raw.z;
+  const gx = raw.gx_dps ?? raw.gx;
+  const gy = raw.gy_dps ?? raw.gy;
+  const gz = raw.gz_dps ?? raw.gz;
+  return {
+    ts,
+    ax: ax != null ? Number(ax) : undefined,
+    ay: ay != null ? Number(ay) : undefined,
+    az: az != null ? Number(az) : undefined,
+    gx: gx != null ? Number(gx) : undefined,
+    gy: gy != null ? Number(gy) : undefined,
+    gz: gz != null ? Number(gz) : undefined,
+  };
+}
+
+// Extrai 1 amostra de {items}/{data}/array/objeto (preferindo o mais recente)
+function pickOneMpuSample(payload: any): any {
+  if (!payload) return null;
+  const p = payload.items ?? payload.data ?? payload;
+  if (Array.isArray(p)) return p[0] ?? null; // maioria já retorna DESC
+  return p;
+}
+
+/**
+ * Última amostra do MPU (A1/A2) sem ruído de log.
+ * Tenta só rotas "history" por query, sem since/asc/limit (evita 422).
+ * Ordem: /mpu/history?name=MPUAx → /mpu/history?id=MPUAx → /api/mpu/history?name=… → /api/mpu/history?id=…
+ */
+export async function getMpuLatestSafe(nameOrId: string): Promise<MpuSample | null> {
+  const s = String(nameOrId).trim();
+  const m = /^MPUA?(\d+)$/i.exec(s);
+  const idName = m?.[1] ? `MPUA${m[1]}` : /^\d+$/.test(s) ? `MPUA${s}` : s.toUpperCase();
+
+  const qsName = new URLSearchParams({ name: idName }).toString();
+  const qsId   = new URLSearchParams({ id: idName }).toString();
+
+  const urls = [
+    `/mpu/history?${qsName}`,
+    `/mpu/history?${qsId}`,
+    `/api/mpu/history?${qsName}`,
+    `/api/mpu/history?${qsId}`,
+  ];
+
+  for (const url of urls) {
+    try {
+      const r = await fetchJson<any>(url);
+      const one = pickOneMpuSample(r);
+      const norm = normalizeMpuSample(one);
+      if (norm && (norm.ax != null || norm.ay != null || norm.az != null)) return norm;
+    } catch {
+      // ignora e tenta a próxima
+    }
+  }
+  return null;
+}
+
+/**
+ * Compat: última amostra por mpu_id numérico (1,2,…).
+ * Converte para "MPUA{n}" e delega para getMpuLatestSafe.
+ */
+export async function getMpuLatestById(mpu_id: number): Promise<MpuSample | null> {
+  return getMpuLatestSafe(`MPUA${String(mpu_id)}`);
+}
