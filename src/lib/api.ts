@@ -247,22 +247,73 @@ export async function getLiveActuatorsState(): Promise<{
   system: { status: string };
   actuators: any[];
 }> {
+  // helper de normalização (id, ciclos, etc.)
+  const normAct = (raw: any) => {
+    if (!raw) return null;
+    const id = Number(raw.id ?? raw.actuator_id);
+    if (!Number.isFinite(id)) return null;
+    return {
+      // campos “canônicos” esperados pelo app
+      id,                                         // <— sempre presente
+      state: raw.state ?? null,
+      pending: raw.pending ?? null,
+      fault: raw.fault ?? null,
+      facets: raw.facets ?? undefined,            // legado (se vier)
+      // números de ciclo (qualquer shape -> totalCycles/cycles)
+      cycles: raw.cycles ?? raw.count ?? raw.total ?? undefined,
+      totalCycles: raw.totalCycles ?? raw.total ?? raw.cycles ?? undefined,
+      // timestamps/aux
+      ts: raw.ts ?? raw.ts_utc ?? undefined,
+      started_at: raw.started_at ?? undefined,
+      elapsed_ms: raw.elapsed_ms ?? undefined,
+      // mantemos quaisquer extras
+      ...raw,
+      // mas garantimos que não exista conflict com actuator_id
+      actuator_id: undefined,
+    };
+  };
+
   try {
     const data = await fetchJson<any>("/api/live/actuators/state");
-    const status = String(data?.system?.status ?? "unknown");
+
+    // status do sistema (se o endpoint não mandar, consultamos /api/health)
+    let status = String(data?.system?.status ?? "").toLowerCase();
+    if (!status) {
+      try {
+        const h = await getHealth();
+        status = String(h?.status ?? "unknown").toLowerCase();
+      } catch {
+        status = "unknown";
+      }
+    }
+
+    const arr = Array.isArray(data?.actuators) ? data.actuators : [];
+    const actuators = arr.map(normAct).filter(Boolean);
+
     return {
       ts: String(data?.ts ?? new Date().toISOString()),
       system: { status },
-      actuators: Array.isArray(data?.actuators) ? data.actuators : [],
+      actuators,
     };
   } catch {
+    // fallback (mantém o app vivo mesmo sem a rota principal)
     try {
       const raw = await getActuatorsState();
+      const arr = Array.isArray(raw?.actuators) ? raw.actuators : [];
+      const actuators = arr.map((a: any) => ({
+        id: Number(a.id ?? a.actuator_id),
+        state: a.state ?? null,
+        facets: a.facets ?? undefined,
+        cycles: a.cycles ?? undefined,
+        totalCycles: a.totalCycles ?? undefined,
+        ...a,
+      })).filter((x: any) => Number.isFinite(x.id));
+
       const h = await getHealth().catch(() => ({ status: "offline" } as any));
       return {
         ts: new Date().toISOString(),
         system: { status: String((h as any)?.status ?? "unknown") },
-        actuators: Array.isArray((raw as any)?.actuators) ? (raw as any).actuators : [],
+        actuators,
       };
     } catch {
       const h = await getHealth().catch(() => ({ status: "offline" } as any));
@@ -462,4 +513,27 @@ export async function getMpuLatestSafe(nameOrId: string): Promise<MpuSample | nu
  */
 export async function getMpuLatestById(mpu_id: number): Promise<MpuSample | null> {
   return getMpuLatestSafe(`MPUA${String(mpu_id)}`);
+}
+
+
+// ===== Alerts =====
+export type AlertItem = {
+  id: number | string;
+  code: string;
+  type?: string;
+  severity: number;             // 1..5
+  message: string;
+  origin?: string;              // A1/A2/S1/S2
+  status?: "open" | "ack" | "closed";
+  created_at: string;           // ISO
+  actuator_id?: number | null;
+  value?: number | null;
+  limit_value?: number | null;
+  unit?: string | null;
+  recommendations?: string[];
+  causes?: string[];
+};
+
+export async function getAlerts(limit = 5): Promise<{ items: AlertItem[]; count: number }> {
+  return fetchJson<{ items: AlertItem[]; count: number }>(`/alerts?limit=${limit}`);
 }

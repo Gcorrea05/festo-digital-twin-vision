@@ -1,5 +1,4 @@
 // src/context/LiveContext.tsx
-
 import React, {
   createContext,
   useContext,
@@ -11,7 +10,7 @@ import React, {
 
 import {
   getHealth,
-  getLiveActuatorsState, // traz system.status + facets/cpm/cycles por atuador (helper do api.ts)
+  getLiveActuatorsState, // helper do api.ts (traz system.status + actuators)
   getMpuIds,
   getLatestMPU,
 } from "@/lib/api";
@@ -24,10 +23,10 @@ export type ActuatorSnapshot = {
   id: number;
   ts: string;
   fsm: { state: string; error_code?: string | number };
-  facets: Facets;
+  facets: Facets;            // S1=Recuado, S2=Avançado (0/0 = transição)
   cpm: number;
   rms: number;
-  // opcionais para contagem de ciclos (não afeta quem não usa)
+  // opcionais para contagem de ciclos
   cycles?: number;
   totalCycles?: number;
 };
@@ -55,7 +54,6 @@ export type Snapshot = {
     gz: number;
     temp_c: number;
   } | null;
-  // opcional para filtro relativo no Dashboard
   selectedActuator?: 1 | 2;
 };
 
@@ -63,7 +61,6 @@ type LiveContextValue = {
   snapshot: Snapshot | null;
   mode: LiveMode;
   setMode: (m: LiveMode) => void;
-  // novo: expõe setter do filtro (1|2|null para limpar)
   setSelectedActuator: (id: 1 | 2 | null) => void;
 };
 
@@ -91,13 +88,14 @@ function decideFsmState(f: { S1: 0 | 1; S2: 0 | 1 }): string {
   if (s1 === 1 && s2 === 0) return "fechado";
   if (s2 === 1 && s1 === 0) return "aberto";
   if (s1 === 1 && s2 === 1) return "erro";
-  return "indef";
+  return "indef"; // 0/0
 }
+
 export function LiveProvider({ children }: Props) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [mode, setMode] = useState<LiveMode>("live");
 
-  // estado de filtro por atuador (undefined = sem filtro)
+  // filtro por atuador (undefined = sem filtro)
   const [selectedActuator, _setSelectedActuator] = useState<1 | 2 | undefined>(undefined);
   const setSelectedActuator = (id: 1 | 2 | null) =>
     _setSelectedActuator(id == null ? undefined : id);
@@ -111,7 +109,10 @@ export function LiveProvider({ children }: Props) {
   const [mpu, setMpu] = useState<Snapshot["mpu"]>(null);
   const mpuChosenIdRef = useRef<string | null>(null);
 
-  // -------- Poll 1: System + Actuators + Ciclos/CPM (500 ms) --------
+  // --- memória local: último estado estável por atuador (evita “—”/piscadas em 0/0) ---
+  const lastStableRef = useRef<Record<number, "ABERTO" | "RECUADO" | undefined>>({});
+
+  // -------- Poll 1: System + Actuators + Ciclos/CPM (400 ms) --------
   useEffect(() => {
     if (mode !== "live") return;
     let timer: number | null = null;
@@ -119,7 +120,6 @@ export function LiveProvider({ children }: Props) {
 
     const tick = async () => {
       try {
-        // live agrega dados de atuadores e status básico
         const live = await getLiveActuatorsState().catch(async () => {
           const h = await getHealth().catch(() => ({ status: "offline" }));
           return {
@@ -129,7 +129,6 @@ export function LiveProvider({ children }: Props) {
           };
         });
 
-
         const sys = normSystemStatus(live?.system?.status);
         const tsNow = new Date().toISOString();
 
@@ -138,25 +137,38 @@ export function LiveProvider({ children }: Props) {
             const id = Number(a?.id ?? a?.actuator_id ?? 0);
             if (!id) return null;
 
-            // facets boolean|null -> 0|1 (espera estrutura {S1,S2}; se vier recuado/avancado, fallback)
-            const s1b = a?.facets?.S1 ?? (a?.recuado ?? null);
-            const s2b = a?.facets?.S2 ?? (a?.avancado ?? null);
+            // 1) tenta deduzir facets a partir de state textual
+            const st = String(a?.state ?? "").toUpperCase(); // RECUADO | AVANÇADO
+            let facetsFromState: Facets | null = null;
+            if (st.includes("RECU")) facetsFromState = { S1: 1, S2: 0 };
+            else if (st.includes("AVAN")) facetsFromState = { S1: 0, S2: 1 };
+
+            // 2) fallback p/ legado (facets/recuado/avancado)
             const to01 = (v: any) => (v === true || v === 1 ? 1 : v === false || v === 0 ? 0 : 0);
+            const s1b = a?.facets?.S1 ?? a?.recuado ?? null;
+            const s2b = a?.facets?.S2 ?? a?.avancado ?? null;
+            let facets: Facets = facetsFromState ?? { S1: to01(s1b) as 0 | 1, S2: to01(s2b) as 0 | 1 };
 
-            const facets: Facets = { S1: to01(s1b) as 0 | 1, S2: to01(s2b) as 0 | 1 };
+            // 3) transição (0/0): mantenha último estável conhecido
+            if (facets.S1 === 0 && facets.S2 === 0 && lastStableRef.current[id]) {
+              // nada a mudar — as telas usarão o estável como display
+            } else if (facets.S1 === 1 && facets.S2 === 0) {
+              lastStableRef.current[id] = "RECUADO";
+            } else if (facets.S1 === 0 && facets.S2 === 1) {
+              lastStableRef.current[id] = "ABERTO";
+            }
 
-            // cycles/totalCycles se vierem; fallback para cpm (compat)
-            const cycles = Number((a?.cycles ?? a?.totalCycles ?? a?.cpm ?? 0) as number);
+            const cyclesNum = Number(a?.totalCycles ?? a?.cycles ?? 0);
 
             return {
               id,
               ts: tsNow,
               fsm: { state: decideFsmState(facets) },
               facets,
-              cpm: Number(a?.cpm ?? cycles ?? 0),
+              cpm: Number(a?.cpm ?? 0),
               rms: 0,
-              cycles,
-              totalCycles: cycles,
+              cycles: cyclesNum,
+              totalCycles: cyclesNum,
             } as ActuatorSnapshot;
           })
           .filter(Boolean) as ActuatorSnapshot[];
@@ -164,7 +176,25 @@ export function LiveProvider({ children }: Props) {
         if (!cancelled) {
           setSystemStatus(sys);
           setSystemComponents(undefined);
-          setActuators(acts);
+
+          // evita renders desnecessários
+          setActuators((prev) => {
+            const sameLen = prev.length === acts.length;
+            const same =
+              sameLen &&
+              prev.every((p, i) => {
+                const n = acts[i];
+                return (
+                  p.id === n.id &&
+                  p.facets.S1 === n.facets.S1 &&
+                  p.facets.S2 === n.facets.S2 &&
+                  p.fsm.state === n.fsm.state &&
+                  p.cpm === n.cpm &&
+                  p.totalCycles === n.totalCycles
+                );
+              });
+            return same ? prev : acts;
+          });
         }
       } catch {
         if (!cancelled) {
@@ -174,7 +204,7 @@ export function LiveProvider({ children }: Props) {
         }
       } finally {
         if (!cancelled) {
-          timer = window.setTimeout(tick, 500) as unknown as number;
+          timer = window.setTimeout(tick, 400) as unknown as number; // 0,4s
         }
       }
     };
@@ -184,6 +214,7 @@ export function LiveProvider({ children }: Props) {
       if (timer) clearTimeout(timer);
     };
   }, [mode]);
+
   // -------- Poll 2: MPU latest (1 s) --------
   useEffect(() => {
     if (mode !== "live") return;
@@ -251,7 +282,7 @@ export function LiveProvider({ children }: Props) {
         snapshot,
         mode,
         setMode,
-        setSelectedActuator, // expõe para 3D/LiveMetrics
+        setSelectedActuator,
       }}
     >
       {children}

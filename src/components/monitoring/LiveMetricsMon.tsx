@@ -1,173 +1,89 @@
 // src/components/monitoring/LiveMetricsMon.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useLive } from "@/context/LiveContext";
-import { getMpuLatestSafe, getActuatorTimings, ActuatorTimingsResp } from "@/lib/api";
-
-const POLL_MS = 3000;
+import useLatchedDisplay from "../../hooks/useLatchedDisplay";
+import { useActuatorTimings } from "../../hooks/useActuatorTimings";
 
 type Props = { selectedId: 1 | 2 };
-type MpuVec = { ax?: number; ay?: number; az?: number } | null;
+
+const fmtMs = (v?: number | null) =>
+  v == null || !Number.isFinite(Number(v)) ? "—" : `${v} ms`;
 
 const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
   const { snapshot } = useLive();
+  const { timingsById, loading: tLoading } = useActuatorTimings(2000);
 
-  // --- System status (sem alterações) ---
-  const systemText = useMemo<"OK" | "DEGRADED" | "OFFLINE" | "—">(() => {
-    const s = String(snapshot?.system?.status ?? "—").toLowerCase();
-    if (s === "ok") return "OK";
-    if (s === "degraded") return "DEGRADED";
-    if (s === "down" || s === "offline") return "OFFLINE";
-    return "—";
-  }, [snapshot]);
+  const a =
+    (snapshot?.actuators ?? []).find((x: any) => Number(x.id) === Number(selectedId)) ??
+    null;
 
-  // --- CPM (mesma heurística do dashboard via snapshot.actuators) ---
-  const cpm = useMemo<number | null>(() => {
-    const a = snapshot?.actuators?.find((x) => x.id === selectedId);
-    const v = a ? Number(a.cpm ?? 0) : null;
-    return Number.isFinite(v as number) ? (v as number) : null;
-  }, [snapshot, selectedId]);
+  // ⬇️ histerese/hysteresis aqui
+  const { label: displayState, facets } = useLatchedDisplay(a, selectedId);
 
-  // --- VIBRAÇÃO (última amostra gravada no DB) ---
-  const mpuName = selectedId === 1 ? "MPUA1" : "MPUA2";
-  const [mpu, setMpu] = useState<MpuVec>(null);
+  // tempos do último ciclo
+  const t = timingsById[selectedId];
 
-  const vibOverall = useMemo(() => {
-    if (!mpu) return null;
-    const ax = Number(mpu.ax ?? 0);
-    const ay = Number(mpu.ay ?? 0);
-    const az = Number(mpu.az ?? 0);
-    const v = Math.sqrt(ax * ax + ay * ay + az * az);
-    return Number.isFinite(v) ? v : null;
-  }, [mpu]);
-
-  // --- TIMINGS (DTAbre/DTFecha/DTCiclo) vindos do backend ---
-  const [timings, setTimings] = useState<ActuatorTimingsResp["actuators"] | null>(null);
-
-  function secToMs(val: number | null | undefined): number | null {
-    if (val == null) return null;
-    const ms = Math.round(Number(val) * 1000);
-    return Number.isFinite(ms) ? ms : null;
-  }
-
-  const { tOpenMs, tCloseMs, tCycleMs } = useMemo(() => {
-    const act = timings?.find((a) => Number(a.actuator_id) === selectedId);
-    const openMs = secToMs(act?.last?.dt_abre_s ?? null);
-    const closeMs = secToMs(act?.last?.dt_fecha_s ?? null);
-    // Se o backend já calcular dt_ciclo_s, usamos; senão somamos localmente quando possível
-    const cycleMsBackend = secToMs(act?.last?.dt_ciclo_s ?? null);
-    const cycleMs =
-      cycleMsBackend != null
-        ? cycleMsBackend
-        : openMs != null && closeMs != null
-        ? openMs + closeMs
-        : null;
-    return { tOpenMs: openMs, tCloseMs: closeMs, tCycleMs: cycleMs };
-  }, [timings, selectedId]);
-
-  // Poll dos dados (mpu latest + timings)
-  useEffect(() => {
-    let alive = true;
-
-    const tick = async () => {
-      try {
-        // vibração
-        const latest = await getMpuLatestSafe(mpuName).catch(() => null);
-        if (alive) setMpu(latest ? { ax: latest.ax, ay: latest.ay, az: latest.az } : null);
-
-        // timings (DTAbre/DTFecha/DTCiclo)
-        const t = await getActuatorTimings().catch(() => null);
-        if (alive) setTimings(Array.isArray(t?.actuators) ? t!.actuators : null);
-      } finally {
-        if (alive) setTimeout(tick, POLL_MS);
-      }
-    };
-
-    tick();
-    return () => {
-      alive = false;
-    };
-  }, [mpuName]);
+  // CPM / ciclos se vierem no snapshot
+  const cpm = Number((a as any)?.cpm ?? 0) || 0;
+  const cycles = Number((a as any)?.totalCycles ?? (a as any)?.cycles ?? 0) || 0;
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-      {/* CPM (1 min) — fixo para A{selectedId} */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">CPM (1 min)</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-semibold leading-none tracking-tight">
-            {cpm != null ? cpm.toFixed(1) : "—"}
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">Live • Atuador A{selectedId}</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Linha 1 */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div>
+            <div className="text-xs text-muted-foreground">Estado</div>
+            <div className="text-lg font-semibold uppercase">{displayState}</div>
+            {facets && (
+              <div className="mt-0.5 text-[10px] text-muted-foreground">
+                S1={facets.S1} • S2={facets.S2}
+              </div>
+            )}
           </div>
-          <p className="text-xs text-muted-foreground mt-1">atuador A{selectedId}</p>
-        </CardContent>
-      </Card>
 
-      {/* Sistema Ligado */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Sistema Ligado</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-semibold leading-none tracking-tight">
-            {systemText}
+          <div>
+            <div className="text-xs text-muted-foreground">CPM</div>
+            <div className="text-lg font-semibold">{cpm}</div>
           </div>
-        </CardContent>
-      </Card>
 
-      {/* Vibração (último valor salvo no DB → overall) */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Vibration (overall)</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-semibold leading-none tracking-tight">
-            {vibOverall != null ? vibOverall.toFixed(2) : "—"}
+          <div>
+            <div className="text-xs text-muted-foreground">Ciclos</div>
+            <div className="text-lg font-semibold">{cycles}</div>
           </div>
-          <p className="text-xs text-muted-foreground mt-1">{mpuName}</p>
-        </CardContent>
-      </Card>
 
-      {/* DTAbre */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">DTAbre (últ.)</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-semibold leading-none tracking-tight">
-            {tOpenMs != null ? `${tOpenMs} ms` : "—"}
+          <div>
+            <div className="text-xs text-muted-foreground">Última leitura</div>
+            <div className="text-sm">
+              {t?.ts ? new Date(t.ts).toLocaleTimeString() : "—"}
+              {tLoading ? (
+                <span className="ml-2 text-xs opacity-60">atualizando…</span>
+              ) : null}
+            </div>
           </div>
-          <p className="text-xs text-muted-foreground mt-1">tag: aberto</p>
-        </CardContent>
-      </Card>
+        </div>
 
-      {/* DTFecha */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">DTFecha (últ.)</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-semibold leading-none tracking-tight">
-            {tCloseMs != null ? `${tCloseMs} ms` : "—"}
+        {/* Linha 2 */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="rounded-md border px-3 py-2">
+            <div className="text-xs text-muted-foreground">Abertura</div>
+            <div className="text-lg font-semibold">{fmtMs(t?.open_ms)}</div>
           </div>
-          <p className="text-xs text-muted-foreground mt-1">tag: fechado</p>
-        </CardContent>
-      </Card>
-
-      {/* DTCiclo = aberto + fechado */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">DTCiclo (últ.)</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-semibold leading-none tracking-tight">
-            {tCycleMs != null ? `${tCycleMs} ms` : "—"}
+          <div className="rounded-md border px-3 py-2">
+            <div className="text-xs text-muted-foreground">Fechamento</div>
+            <div className="text-lg font-semibold">{fmtMs(t?.close_ms)}</div>
           </div>
-          <p className="text-xs text-muted-foreground mt-1">aberto + fechado</p>
-        </CardContent>
-      </Card>
-    </div>
+          <div className="rounded-md border px-3 py-2">
+            <div className="text-xs text-muted-foreground">Ciclo</div>
+            <div className="text-lg font-semibold">{fmtMs(t?.cycle_ms)}</div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 };
 
