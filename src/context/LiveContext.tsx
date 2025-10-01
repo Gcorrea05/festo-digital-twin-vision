@@ -1,4 +1,3 @@
-// src/context/LiveContext.tsx
 import React, {
   createContext,
   useContext,
@@ -41,6 +40,10 @@ export type Snapshot = {
       transmission?: string;
       control?: string;
     };
+    /** ISO UTC do início do processo no backend (para runtime) */
+    started_at?: string;
+    /** runtime em milissegundos, calculado no front com base em started_at */
+    runtime_ms?: number;
   };
   actuators: ActuatorSnapshot[];
   mpu?: {
@@ -102,9 +105,10 @@ export function LiveProvider({ children }: Props) {
 
   // Estados parciais para compor o snapshot
   const [systemStatus, setSystemStatus] = useState<"ok" | "down" | "unknown">("unknown");
-  const [systemComponents, setSystemComponents] = useState<Snapshot["system"]["components"]>(
-    undefined
-  );
+  const [systemComponents, setSystemComponents] = useState<Snapshot["system"]["components"]>(undefined);
+  const [startedAt, setStartedAt] = useState<string | undefined>(undefined);
+  const [runtimeMs, setRuntimeMs] = useState<number | undefined>(undefined);
+
   const [actuators, setActuators] = useState<ActuatorSnapshot[]>([]);
   const [mpu, setMpu] = useState<Snapshot["mpu"]>(null);
   const mpuChosenIdRef = useRef<string | null>(null);
@@ -215,6 +219,51 @@ export function LiveProvider({ children }: Props) {
     };
   }, [mode]);
 
+  // -------- Poll 1.1: Health (status + started_at) a cada 5s --------
+  useEffect(() => {
+    if (mode !== "live") return;
+    let cancelled = false;
+    const pull = async () => {
+      try {
+        const h = await getHealth();
+        if (cancelled) return;
+        const status = normSystemStatus(h?.status);
+        setSystemStatus(status);
+        if (h?.started_at) {
+          setStartedAt(h.started_at);
+        }
+      } catch {
+        if (!cancelled) {
+          setSystemStatus("down");
+        }
+      }
+    };
+    pull();
+    const id = window.setInterval(pull, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [mode]);
+
+  // -------- Timer local: atualiza runtime_ms a cada 1s, se temos started_at --------
+  useEffect(() => {
+    if (mode !== "live") return;
+    if (!startedAt) {
+      setRuntimeMs(undefined);
+      return;
+    }
+    const startedMs = Date.parse(startedAt);
+    if (!Number.isFinite(startedMs)) {
+      setRuntimeMs(undefined);
+      return;
+    }
+    const update = () => setRuntimeMs(Date.now() - startedMs);
+    update();
+    const id = window.setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, [mode, startedAt]);
+
   // -------- Poll 2: MPU latest (1 s) --------
   useEffect(() => {
     if (mode !== "live") return;
@@ -268,13 +317,19 @@ export function LiveProvider({ children }: Props) {
   useEffect(() => {
     if (mode !== "live") return;
     const snap: Snapshot = {
-      system: { status: systemStatus, ts: Date.now(), components: systemComponents },
+      system: {
+        status: systemStatus,
+        ts: Date.now(),
+        components: systemComponents,
+        started_at: startedAt,
+        runtime_ms: runtimeMs,
+      },
       actuators,
       mpu,
       ...(selectedActuator ? { selectedActuator } : {}),
     };
     setSnapshot(snap);
-  }, [mode, systemStatus, systemComponents, actuators, mpu, selectedActuator]);
+  }, [mode, systemStatus, systemComponents, actuators, mpu, selectedActuator, startedAt, runtimeMs]);
 
   return (
     <LiveContext.Provider

@@ -1,3 +1,5 @@
+// src/pages/DashboardLiveMetrics.tsx  (ou o caminho correspondente)
+
 import React, { useMemo, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useLive } from "@/context/LiveContext";
@@ -14,6 +16,20 @@ function decideStateFromFacets(
   return prev; // 1/1: mantém (outra camada pode exibir erro se quiser)
 }
 
+/** ms -> "Xd HH:MM:SS" ou "HH:MM:SS" */
+function formatDuration(ms?: number) {
+  if (!Number.isFinite(ms as number) || (ms as number) < 0) return "—";
+  const totalSec = Math.floor((ms as number) / 1000);
+  const d = Math.floor(totalSec / 86400);
+  const h = Math.floor((totalSec % 86400) / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const hh = String(h).padStart(2, "0");
+  const mm = String(m).padStart(2, "0");
+  const ss = String(s).padStart(2, "0");
+  return d > 0 ? `${d}d ${hh}:${mm}:${ss}` : `${hh}:${mm}:${ss}`;
+}
+
 const LiveMetrics: React.FC = () => {
   const { snapshot } = useLive();
 
@@ -24,7 +40,12 @@ const LiveMetrics: React.FC = () => {
     if (s === "degraded") return "DEGRADED";
     if (s === "down" || s === "offline") return "OFFLINE";
     return "—";
-  }, [snapshot]);
+  }, [snapshot?.system?.status]);
+
+  // runtime formatado
+  const runtimeText = useMemo(() => {
+    return formatDuration(snapshot?.system?.runtime_ms);
+  }, [snapshot?.system?.runtime_ms]);
 
   // ids exibidos
   const shownIds: (1 | 2)[] =
@@ -42,10 +63,8 @@ const LiveMetrics: React.FC = () => {
       .filter(Boolean) as Array<{
         id: 1 | 2;
         facets?: { S1: 0 | 1; S2: 0 | 1 };
-        cycles?: number;
-        totalCycles?: number;
       }>;
-  }, [snapshot, shownIds]);
+  }, [snapshot?.actuators, shownIds]);
 
   // atualiza lastStable a cada render com base na regra
   const displayStates = rows.map((a) => {
@@ -54,11 +73,6 @@ const LiveMetrics: React.FC = () => {
     if (next !== "—") lastStableRef.current[a.id] = next;
     return { id: a.id, state: next };
   });
-
-  const totalCycles = useMemo(() => {
-    if (!rows.length) return 0;
-    return rows.reduce((acc, a) => acc + Number(a.totalCycles ?? a.cycles ?? 0), 0);
-  }, [rows]);
 
   return (
     <Card>
@@ -72,9 +86,9 @@ const LiveMetrics: React.FC = () => {
             <div className="text-2xl font-semibold leading-none tracking-tight">{systemText}</div>
           </div>
           <div>
-            <div className="text-sm text-muted-foreground mb-1">Total de Ciclos</div>
+            <div className="text-sm text-muted-foreground mb-1">Runtime</div>
             <div className="text-2xl font-semibold leading-none tracking-tight">
-              {Number.isFinite(totalCycles) ? totalCycles : 0}
+              {runtimeText}
             </div>
           </div>
         </div>
