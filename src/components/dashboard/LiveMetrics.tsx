@@ -1,6 +1,5 @@
-// src/pages/DashboardLiveMetrics.tsx  (ou o caminho correspondente)
-
-import React, { useMemo, useRef } from "react";
+// src/pages/DashboardLiveMetrics.tsx
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useLive } from "@/context/LiveContext";
 
@@ -12,8 +11,8 @@ function decideStateFromFacets(
   const { S1, S2 } = f;
   if (S1 === 1 && S2 === 0) return "RECUADO";
   if (S1 === 0 && S2 === 1) return "ABERTO";
-  if (S1 === 0 && S2 === 0) return prev; // mantém
-  return prev; // 1/1: mantém (outra camada pode exibir erro se quiser)
+  if (S1 === 0 && S2 === 0) return prev;
+  return prev; // 1/1
 }
 
 /** ms -> "Xd HH:MM:SS" ou "HH:MM:SS" */
@@ -30,8 +29,28 @@ function formatDuration(ms?: number) {
   return d > 0 ? `${d}d ${hh}:${mm}:${ss}` : `${hh}:${mm}:${ss}`;
 }
 
+/** aceita ISO, UNIX seg ou UNIX ms; retorna ms ou undefined */
+function parseStartTs(anyTs: unknown): number | undefined {
+  if (anyTs == null) return undefined;
+  if (typeof anyTs === "number") return anyTs < 2_000_000_000 ? anyTs * 1000 : anyTs;
+  if (typeof anyTs === "string") {
+    const num = Number(anyTs);
+    if (Number.isFinite(num)) return num < 2_000_000_000 ? num * 1000 : num;
+    const parsed = Date.parse(anyTs);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
 const LiveMetrics: React.FC = () => {
   const { snapshot } = useLive();
+
+  // ticker local p/ garantir atualização do relógio na UI
+  const [, setNow] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setNow((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   // system text
   const systemText = useMemo<"OK" | "DEGRADED" | "OFFLINE" | "—">(() => {
@@ -42,10 +61,18 @@ const LiveMetrics: React.FC = () => {
     return "—";
   }, [snapshot?.system?.status]);
 
-  // runtime formatado
-  const runtimeText = useMemo(() => {
-    return formatDuration(snapshot?.system?.runtime_ms);
-  }, [snapshot?.system?.runtime_ms]);
+  // runtime: prefere vir do contexto; se não, calcula com started_at
+  const runtimeMs = useMemo(() => {
+    const ctxMs = snapshot?.system?.runtime_ms;
+    if (Number.isFinite(ctxMs as number)) return ctxMs as number;
+
+    const started = parseStartTs(snapshot?.system?.started_at);
+    if (Number.isFinite(started as number)) return Date.now() - (started as number);
+
+    return undefined;
+  }, [snapshot?.system?.runtime_ms, snapshot?.system?.started_at]);
+
+  const runtimeText = useMemo(() => formatDuration(runtimeMs), [runtimeMs]);
 
   // ids exibidos
   const shownIds: (1 | 2)[] =
@@ -114,6 +141,8 @@ const LiveMetrics: React.FC = () => {
   );
 };
 
-function ID_TO_STR(id: number) { return id; }
+function ID_TO_STR(id: number) {
+  return id;
+}
 
 export default LiveMetrics;

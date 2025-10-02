@@ -1,3 +1,4 @@
+// src/context/LiveContext.tsx
 import React, {
   createContext,
   useContext,
@@ -11,7 +12,6 @@ import {
   getHealth,
   getMpuIds,
   getLatestMPU,
-  // fast path direto pro backend (usa rota que você configurou no api.ts)
   getActuatorsStateFast,
 } from "@/lib/api";
 
@@ -23,7 +23,7 @@ export type ActuatorSnapshot = {
   id: number;
   ts: string;
   fsm: { state: string; error_code?: string | number };
-  facets: Facets;            // S1=Recuado, S2=Avançado (0/0 = transição)
+  facets: Facets; // S1=Recuado, S2=Avançado (0/0 = transição)
   cpm: number;
   rms: number;
   cycles?: number;
@@ -40,8 +40,8 @@ export type Snapshot = {
       transmission?: string;
       control?: string;
     };
-    started_at?: string;
-    runtime_ms?: number;
+    started_at?: string;   // telemetria opcional
+    runtime_ms?: number;   // runtime de sessão (calculado no front)
   };
   actuators: ActuatorSnapshot[];
   mpu?: {
@@ -86,7 +86,7 @@ function normSystemStatus(s: any): "ok" | "down" | "unknown" {
 // Regra sem transições: só aberto/fechado/indef/erro
 function decideFsmState(f: { S1: 0 | 1; S2: 0 | 1 }): string {
   const s1 = f.S1, s2 = f.S2;
-  if (s1 === 1 && s2 === 0) return "fechado";
+  if (s1 === 1 && s2 === 0) return "fechado"; // RECUADO
   if (s2 === 1 && s1 === 0) return "aberto";
   if (s1 === 1 && s2 === 1) return "erro";
   return "indef"; // 0/0
@@ -104,7 +104,7 @@ export function LiveProvider({ children }: Props) {
   // Estados parciais para compor o snapshot
   const [systemStatus, setSystemStatus] = useState<"ok" | "down" | "unknown">("unknown");
   const [systemComponents, setSystemComponents] = useState<Snapshot["system"]["components"]>(undefined);
-  const [startedAt, setStartedAt] = useState<string | undefined>(undefined);
+  const [startedAt, setStartedAt] = useState<string | undefined>(undefined); // opcional
   const [runtimeMs, setRuntimeMs] = useState<number | undefined>(undefined);
 
   const [actuators, setActuators] = useState<ActuatorSnapshot[]>([]);
@@ -118,6 +118,21 @@ export function LiveProvider({ children }: Props) {
   const reqSeqActRef = useRef(0);
   const reqSeqMpuRef = useRef(0);
   const visibleRef = useRef<boolean>(typeof document !== "undefined" ? !document.hidden : true);
+
+  // ===== Runtime de sessão guiado por TRANSIÇÃO ABERTO -> RECUADO =====
+  const FRESH_GAP_MS = 3000; // pausa se 3s sem dados
+  const TICK_MS = 500;       // atualização do relógio
+
+  // instante da última chegada de dados (para "freshness")
+  const lastActFreshMsRef = useRef<number | null>(null);
+  // início da sessão atual
+  const sessionStartMsRef = useRef<number | null>(null);
+  // estado: relógio rodando?
+  const runningRef = useRef<boolean>(false);
+  // precisamos de um gatilho de transição ABERTO -> RECUADO para iniciar?
+  const waitingForTriggerRef = useRef<boolean>(true);
+  // seta quando detectar a transição no poll; o tick consome isso
+  const wantStartRef = useRef<boolean>(false);
 
   // -------- Poll 0: observar visibilidade da aba (pausa/resume) --------
   useEffect(() => {
@@ -138,15 +153,12 @@ export function LiveProvider({ children }: Props) {
     const tick = async () => {
       try {
         if (!visibleRef.current) {
-          // se aba oculta, espera um pouco e volta
           timer = window.setTimeout(tick, 800) as unknown as number;
           return;
         }
 
         const mySeq = ++reqSeqActRef.current;
         const live = await getActuatorsStateFast();
-
-        // se chegou resposta antiga, descarta
         if (cancelled || mySeq !== reqSeqActRef.current) return;
 
         const tsNow = new Date().toISOString();
@@ -156,26 +168,33 @@ export function LiveProvider({ children }: Props) {
             const id = Number(a?.id ?? a?.actuator_id ?? 0);
             if (!id) return null;
 
-            // 1) deduz facets a partir de state textual: RECUADO|AVANÇADO
+            // 1) facets por texto do estado (RECUADO/AVANÇADO) ou legado
             const st = String(a?.state ?? "").toUpperCase();
             let facetsFromState: Facets | null = null;
-            if (st.includes("RECU")) facetsFromState = { S1: 1, S2: 0 };
-            else if (st.includes("AVAN")) facetsFromState = { S1: 0, S2: 1 };
+            if (st.includes("RECU")) facetsFromState = { S1: 1, S2: 0 }; // RECUADO = FECHADO
+            else if (st.includes("AVAN")) facetsFromState = { S1: 0, S2: 1 }; // ABERTO
 
-            // 2) fallback p/ legado (se existir)
             const to01 = (v: any) => (v === true || v === 1 ? 1 : v === false || v === 0 ? 0 : 0);
             const s1b = (a?.facets && a.facets.S1 != null) ? a.facets.S1 : a?.recuado ?? null;
             const s2b = (a?.facets && a.facets.S2 != null) ? a.facets.S2 : a?.avancado ?? null;
             const facets: Facets = facetsFromState ?? { S1: to01(s1b) as 0 | 1, S2: to01(s2b) as 0 | 1 };
 
-            // 3) transição (0/0): mantém último estável
-            if (facets.S1 === 0 && facets.S2 === 0 && lastStableRef.current[id]) {
-              // mantém
-            } else if (facets.S1 === 1 && facets.S2 === 0) {
-              lastStableRef.current[id] = "RECUADO";
-            } else if (facets.S1 === 0 && facets.S2 === 1) {
-              lastStableRef.current[id] = "ABERTO";
+            // ----- DETECÇÃO DE TRANSIÇÃO ABERTO -> RECUADO -----
+            const prevStable = lastStableRef.current[id]; // "ABERTO" | "RECUADO" | undefined
+            let newStable: "ABERTO" | "RECUADO" | undefined = prevStable;
+
+            if (facets.S1 === 1 && facets.S2 === 0) newStable = "RECUADO";
+            else if (facets.S1 === 0 && facets.S2 === 1) newStable = "ABERTO";
+            else if (facets.S1 === 0 && facets.S2 === 0) newStable = prevStable; // mantém
+            // 1/1 (erro) não altera estável
+
+            // se houve transição ABERTO -> RECUADO e estamos esperando gatilho, marca para iniciar
+            if (waitingForTriggerRef.current && prevStable === "ABERTO" && newStable === "RECUADO") {
+              wantStartRef.current = true;
             }
+
+            // atualiza último estável
+            if (newStable) lastStableRef.current[id] = newStable;
 
             const cyclesNum = Number(a?.totalCycles ?? a?.cycles ?? 0);
 
@@ -191,6 +210,11 @@ export function LiveProvider({ children }: Props) {
             } as ActuatorSnapshot;
           })
           .filter(Boolean) as ActuatorSnapshot[];
+
+        // chegada de dados (para freshness)
+        if (acts.length > 0) {
+          lastActFreshMsRef.current = Date.now();
+        }
 
         setActuators((prev) => {
           const sameLen = prev.length === acts.length;
@@ -225,46 +249,74 @@ export function LiveProvider({ children }: Props) {
     };
   }, [mode]);
 
-  // -------- Poll 1.1: Health (status + started_at) a cada 5s --------
+  // -------- Poll 1.1: Health (status) a cada 5s --------
   useEffect(() => {
     if (mode !== "live") return;
     let cancelled = false;
+    let timer: number | null = null;
+
     const pull = async () => {
       try {
         const h = await getHealth();
         if (cancelled) return;
-        const status = normSystemStatus(h?.status);
-        setSystemStatus(status);
-        if (h?.started_at) setStartedAt(h.started_at);
+        setSystemStatus(normSystemStatus(h?.status));
+        if (h?.started_at) setStartedAt(String(h.started_at)); // só telemetria
       } catch {
         if (!cancelled) setSystemStatus("down");
+      } finally {
+        if (!cancelled) timer = window.setTimeout(pull, 5000) as unknown as number;
       }
     };
     pull();
-    const id = window.setInterval(pull, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [mode]);
 
-  // -------- Timer local: runtime_ms --------
+  // -------- Runtime: só inicia após ABERTO -> RECUADO; pausa se 3s sem dado --------
   useEffect(() => {
     if (mode !== "live") return;
-    if (!startedAt) {
-      setRuntimeMs(undefined);
-      return;
-    }
-    const startedMs = Date.parse(startedAt);
-    if (!Number.isFinite(startedMs)) {
-      setRuntimeMs(undefined);
-      return;
-    }
-    const update = () => setRuntimeMs(Date.now() - startedMs);
-    update();
-    const id = window.setInterval(update, 1000);
-    return () => clearInterval(id);
-  }, [mode, startedAt]);
+
+    let timer: number | null = null;
+    let cancelled = false;
+
+    const tick = () => {
+      if (cancelled) return;
+
+      const now = Date.now();
+      const lastFresh = lastActFreshMsRef.current;
+      const isFresh = lastFresh != null && now - lastFresh <= FRESH_GAP_MS;
+
+      if (!isFresh) {
+        // sem dados recentes: pausa e requisita novo gatilho
+        runningRef.current = false;
+        waitingForTriggerRef.current = true;
+        // congela runtimeMs (não zera aqui)
+      } else {
+        // há dados chegando e estamos "frescos"
+        if (!runningRef.current) {
+          // ainda não estamos rodando: só inicia se tiver gatilho pendente
+          if (waitingForTriggerRef.current && wantStartRef.current) {
+            sessionStartMsRef.current = now;
+            setRuntimeMs(0);
+            runningRef.current = true;
+            waitingForTriggerRef.current = false;
+            wantStartRef.current = false; // consumiu o gatilho
+          }
+        } else {
+          // rodando: atualiza contagem
+          const start = sessionStartMsRef.current ?? now;
+          setRuntimeMs(now - start);
+        }
+      }
+
+      timer = window.setTimeout(tick, TICK_MS) as unknown as number;
+    };
+
+    tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [mode]);
 
   // -------- Poll 2: MPU latest (1 s) + anti-fila --------
   useEffect(() => {
@@ -283,9 +335,7 @@ export function LiveProvider({ children }: Props) {
 
         if (!mpuChosenIdRef.current) {
           const ids = await getMpuIds().catch(() => []);
-          if (ids && ids.length) {
-            mpuChosenIdRef.current = String(ids[0]);
-          }
+          if (ids && ids.length) mpuChosenIdRef.current = String(ids[0]);
         }
         if (mpuChosenIdRef.current) {
           const mySeq = ++reqSeqMpuRef.current;
@@ -318,10 +368,7 @@ export function LiveProvider({ children }: Props) {
     };
 
     discoverAndTick();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [mode]);
 
   // -------- Composer: monta o Snapshot final --------
@@ -343,14 +390,7 @@ export function LiveProvider({ children }: Props) {
   }, [mode, systemStatus, systemComponents, actuators, mpu, selectedActuator, startedAt, runtimeMs]);
 
   return (
-    <LiveContext.Provider
-      value={{
-        snapshot,
-        mode,
-        setMode,
-        setSelectedActuator,
-      }}
-    >
+    <LiveContext.Provider value={{ snapshot, mode, setMode, setSelectedActuator }}>
       {children}
     </LiveContext.Provider>
   );

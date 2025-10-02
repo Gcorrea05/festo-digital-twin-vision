@@ -1,3 +1,4 @@
+// src/main.tsx
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
@@ -7,13 +8,13 @@ import { ActuatorSelectionProvider } from "@/context/ActuatorSelectionContext";
 
 import "./index.css";
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    {/* Providers no topo → TODAS as rotas ficam cobertas */}
-    <LiveProvider>
-      <ActuatorSelectionProvider>
-        <App />
-      </ActuatorSelectionProvider>
-    </LiveProvider>
-  </React.StrictMode>
+const rootEl = document.getElementById("root")!;
+const root = ReactDOM.createRoot(rootEl);
+
+root.render(
+  <LiveProvider>
+    <ActuatorSelectionProvider>
+      <App />
+    </ActuatorSelectionProvider>
+  </LiveProvider>
 );
