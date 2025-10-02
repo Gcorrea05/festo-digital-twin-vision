@@ -102,6 +102,7 @@ export type ActuatorTimingsResp = {
     };
   }[];
 };
+
 export type SystemStatusResp = {
   components?: {
     actuators?: string;
@@ -143,9 +144,9 @@ export async function getCyclesRate60s(windowS: number = 60): Promise<CyclesRate
   const sumCpm = (r?.actuators ?? []).reduce((acc, a) => acc + (a.cpm || 0), 0);
   return {
     window_seconds: windowS,
-    pairs_count: sumCycles,           // compat: não há "pairs_count", usamos cycles
+    pairs_count: sumCycles,
     cycles: sumCycles,
-    cycles_per_second: sumCpm / 60.0, // CPM agregado / 60
+    cycles_per_second: sumCpm / 60.0,
   };
 }
 
@@ -176,7 +177,6 @@ export async function getHealth(): Promise<HealthResp> {
     }
   }
 }
-
 // ======================
 // Analytics (compat)
 // ======================
@@ -231,12 +231,8 @@ export async function getOPCHistoryByName(
   }));
 }
 export const getOpcHistoryByName = getOPCHistoryByName;
-<<<<<<< HEAD
-// Agregação por minuto (se não houver endpoint, retorna vazio)
-=======
 
-// Agregação por minuto
->>>>>>> d5daabb48b205a13226f6d0fd38953c032e7e139
+// Agregação por minuto (robusta a diferentes formatos)
 export type MinuteAgg = {
   minute: string;
   t_open_ms_avg: number | null;
@@ -252,7 +248,6 @@ export async function getMinuteAgg(act: "A1" | "A2", since: string): Promise<Min
 
   const tryParse = (payload: any): MinuteAgg[] => {
     if (!payload) return [];
-    // aceita array direto OU wrappers comuns
     const arr =
       (Array.isArray(payload) && payload) ||
       payload?.data ||
@@ -533,6 +528,7 @@ export async function getActuatorsStateFast(): Promise<{
   const bust = Date.now();
   return fetchJson(`/api/live/actuators/state?_=${bust}`);
 }
+
 // lib/api.ts
 export async function fetchJsonAbortable<T = any>(path: string, signal: AbortSignal): Promise<T> {
   const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
@@ -543,8 +539,8 @@ export async function fetchJsonAbortable<T = any>(path: string, signal: AbortSig
 
 export async function getActuatorsStateFastAbortable(signal: AbortSignal) {
   const bust = Date.now();
-  // use a rota que está OK aí (uma destas duas):
-  // return fetchJsonAbortable(`/api/live/actuators/state?_=${bust}`, signal);
+  // use a rota que está OK aí (ajuste se necessário)
   return fetchJsonAbortable(`/api/live/actuators/state2?_=${bust}`, signal);
+  // ou: return fetchJsonAbortable(`/api/live/actuators/state?_=${bust}`, signal);
   // ou: return fetchJsonAbortable(`/live/actuators/state?_=${bust}`, signal);
 }

@@ -9,7 +9,7 @@ import {
   type ActuatorTimingsResp,
 } from "@/lib/api";
 
-const POLL_MS = 1000;
+const POLL_MS = 500;
 
 type Props = { selectedId: 1 | 2 };
 type MpuVec = { ax?: number; ay?: number; az?: number } | null;
