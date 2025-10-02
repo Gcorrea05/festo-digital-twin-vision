@@ -85,6 +85,7 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
         }
 
         if (t.status === "fulfilled" && Array.isArray(t.value?.actuators)) {
+          setTimings(t.value.actuactors as any ?? t.value.actuators);
           setTimings(t.value.actuators);
         } else {
           setTimings(null);
@@ -113,7 +114,6 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
           <div className="text-2xl font-semibold leading-none tracking-tight">
             {cpm != null ? cpm.toFixed(1) : "—"}
           </div>
-          <p className="text-xs text-muted-foreground mt-1">atuador A{selectedId}</p>
         </CardContent>
       </Card>
 
@@ -136,7 +136,6 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
           <div className="text-2xl font-semibold leading-none tracking-tight">
             {vibOverall != null ? vibOverall.toFixed(2) : "—"}
           </div>
-          <p className="text-xs text-muted-foreground mt-1">{mpuName}</p>
         </CardContent>
       </Card>
 
@@ -149,7 +148,6 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
           <div className="text-2xl font-semibold leading-none tracking-tight">
             {tOpenMs != null ? `${tOpenMs} ms` : "—"}
           </div>
-          <p className="text-xs text-muted-foreground mt-1">tag: aberto</p>
         </CardContent>
       </Card>
 
@@ -162,7 +160,6 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
           <div className="text-2xl font-semibold leading-none tracking-tight">
             {tCloseMs != null ? `${tCloseMs} ms` : "—"}
           </div>
-          <p className="text-xs text-muted-foreground mt-1">tag: fechado</p>
         </CardContent>
       </Card>
 
@@ -175,7 +172,6 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
           <div className="text-2xl font-semibold leading-none tracking-tight">
             {tCycleMs != null ? `${tCycleMs} ms` : "—"}
           </div>
-          <p className="text-xs text-muted-foreground mt-1">aberto + fechado</p>
         </CardContent>
       </Card>
     </div>
