@@ -97,7 +97,6 @@ export type ActuatorTimingsResp = {
     };
   }[];
 };
-
 export type SystemStatusResp = {
   components?: {
     actuators?: string;
@@ -223,7 +222,6 @@ export async function getOPCHistoryByName(
   }));
 }
 export const getOpcHistoryByName = getOPCHistoryByName;
-
 // Agregação por minuto (se não houver endpoint, retorna vazio)
 export type MinuteAgg = {
   minute: string;
@@ -237,15 +235,34 @@ export type MinuteAgg = {
 
 export async function getMinuteAgg(act: "A1" | "A2", since: string): Promise<MinuteAgg[]> {
   const qs = new URLSearchParams({ act, since });
+
+  const tryParse = (payload: any): MinuteAgg[] => {
+    if (!payload) return [];
+    // aceita array direto OU wrappers comuns
+    const arr =
+      (Array.isArray(payload) && payload) ||
+      payload?.data ||
+      payload?.items ||
+      payload?.rows ||
+      payload?.results ||
+      payload?.records ||
+      [];
+    return Array.isArray(arr) ? (arr as MinuteAgg[]) : [];
+  };
+
   try {
-    return await fetchJson<MinuteAgg[]>(`/metrics/minute-agg?${qs.toString()}`);
-  } catch {
-    try {
-      return await fetchJson<MinuteAgg[]>(`/api/metrics/minute-agg?${qs.toString()}`);
-    } catch {
-      return [];
-    }
-  }
+    const r1 = await fetchJson<any>(`/metrics/minute-agg?${qs.toString()}`);
+    const a1 = tryParse(r1);
+    if (a1.length) return a1;
+  } catch {}
+
+  try {
+    const r2 = await fetchJson<any>(`/api/metrics/minute-agg?${qs.toString()}`);
+    const a2 = tryParse(r2);
+    if (a2.length) return a2;
+  } catch {}
+
+  return [];
 }
 
 // ======================
@@ -332,7 +349,6 @@ export async function getLiveActuatorsState(): Promise<{
     }
   }
 }
-
 // ---- MPU: ids disponíveis ----
 export async function getMpuIds(): Promise<Array<string | number>> {
   try {

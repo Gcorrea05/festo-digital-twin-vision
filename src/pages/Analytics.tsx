@@ -57,7 +57,8 @@ type MpuPoint = {
   gx: number; gy: number; gz: number;
 };
 
-const POLL_MS = 15000;
+const POLL_MS = 15000;      // polling geral (produção/tempos)
+const VIB_POLL_MS = 60000;  // requisito: vibração atualiza a cada 60s
 
 const Analytics: React.FC = () => {
   // ===== Toggle global de atuador (Modelo 1/2) =====
@@ -66,10 +67,11 @@ const Analytics: React.FC = () => {
   // ===== Seletor de 1 gráfico por guia =====
   type ProducaoOpt = "cpm" | "cpm_runtime" | "cpm_compare";
   type TemposOpt = "t_abre" | "t_fecha" | "t_ciclo" | "runtime" | "tempos_compare";
-  type VibraOpt = "accel" | "gyro" | "vib_compare";
+  // Apenas 2 opções na aba Vibração
+  type VibraOpt = "vibracao" | "vib_compare";
   const [optProd, setOptProd] = useState<ProducaoOpt>("cpm");
   const [optTime, setOptTime] = useState<TemposOpt>("t_ciclo");
-  const [optVib, setOptVib] = useState<VibraOpt>("accel");
+  const [optVib, setOptVib] = useState<VibraOpt>("vibracao");
 
   // ===== IDs de MPU e mapeamento (A1 -> idx 0, A2 -> idx 1) =====
   const { ids } = useMpuIds();
@@ -78,7 +80,7 @@ const Analytics: React.FC = () => {
   const mpuA2 = idsArray[1] != null ? String(idsArray[1]) : null;
   const mpuId = useMemo(() => (act === 1 ? mpuA1 : mpuA2), [act, mpuA1, mpuA2]);
 
-  // ===== Vibração (histórico do BD) + polling =====
+  // ===== Vibração (histórico bruto – mantido para "comparação A1×A2 (ax)") =====
   const { rows: rowsAct } = useMpuHistory(mpuId, "-10m", 2000, true);
   const { rows: rowsA1 } = useMpuHistory(mpuA1, "-10m", 2000, true);
   const { rows: rowsA2 } = useMpuHistory(mpuA2, "-10m", 2000, true);
@@ -99,7 +101,7 @@ const Analytics: React.FC = () => {
     });
   };
 
-  // série principal (atuador selecionado)
+  // série principal (atuador selecionado) – ainda usada em "comparação"
   const actMpuRef = useRef<MpuPoint[]>([]);
   const [mpuChartData, setMpuChartData] = useState<MpuPoint[]>([]);
   useEffect(() => {
@@ -116,7 +118,6 @@ const Analytics: React.FC = () => {
   const [mpuA2Data, setMpuA2Data] = useState<MpuPoint[]>([]);
   useEffect(() => setMpuA1Data(parseMpu(rowsA1 as any)), [rowsA1]);
   useEffect(() => setMpuA2Data(parseMpu(rowsA2 as any)), [rowsA2]);
-
   // ===== Produção (CPM 60m via histórico S2) =====
   const [cpmSeries, setCpmSeries] = useState<CpmPoint[]>([]);
   const loadCpm60 = useCallback(async () => {
@@ -129,7 +130,7 @@ const Analytics: React.FC = () => {
       const hist = await getOPCHistory({ actuatorId: id, facet: "S2", since: "-60m", asc: true });
       for (let i = 1; i < hist.length; i++) {
         const prev = Number(hist[i - 1].value);
-        const curr = Number(hist[i].value);
+               const curr = Number(hist[i].value);
         if (prev === 0 && curr === 1) {
           const ts = new Date(hist[i].ts).getTime();
           if (ts >= start) {
@@ -145,7 +146,7 @@ const Analytics: React.FC = () => {
   }, []);
   useEffect(() => { loadCpm60(); const id = setInterval(loadCpm60, POLL_MS); return () => clearInterval(id); }, [loadCpm60]);
 
-  // ===== Métricas agregadas por minuto (Tempos/Runtime/CPM) =====
+  // ===== Métricas agregadas por minuto (Tempos/Runtime/CPM) – polling geral =====
   const [aggA1, setAggA1] = useState<MinuteAgg[]>([]);
   const [aggA2, setAggA2] = useState<MinuteAgg[]>([]);
   const loadAgg = useCallback(async () => {
@@ -157,6 +158,26 @@ const Analytics: React.FC = () => {
     setAggA2(Array.isArray(a2) ? a2 : []);
   }, []);
   useEffect(() => { loadAgg(); const id = setInterval(loadAgg, POLL_MS); return () => clearInterval(id); }, [loadAgg]);
+
+  // ===== Métricas agregadas por minuto apenas p/ VIBRAÇÃO – requisito 60s =====
+  const [vibAggAct, setVibAggAct] = useState<MinuteAgg[]>([]);
+  useEffect(() => {
+    let timer: number | null = null;
+
+    // (1) preenche imediato com o que já temos carregado (agg geral) -> evita “gráfico vazio”
+    setVibAggAct(act === 1 ? aggA1 : aggA2);
+
+    // (2) faz o fetch específico desta aba (média/min) a cada 60s
+    const fetchVib = async () => {
+      const actLabel = act === 1 ? "A1" : "A2";
+      const data = await getMinuteAgg(actLabel as "A1" | "A2", "-2h").catch(() => [] as MinuteAgg[]);
+      if (Array.isArray(data)) setVibAggAct(data);
+    };
+
+    fetchVib();
+    timer = window.setInterval(fetchVib, VIB_POLL_MS);
+    return () => { if (timer) window.clearInterval(timer); };
+  }, [act, aggA1, aggA2]);
 
   const dataAgg = act === 1 ? aggA1 : aggA2;
   const colorAct = act === 1 ? C.A1 : C.A2;
@@ -211,7 +232,6 @@ const Analytics: React.FC = () => {
                 Vibração
               </TabsTrigger>
             </TabsList>
-
             {/* ===================== PRODUÇÃO ===================== */}
             <TabsContent value="producao" className="pt-4">
               <div className="flex items-center gap-3 mb-3">
@@ -324,7 +344,6 @@ const Analytics: React.FC = () => {
                       <YAxis yAxisId="right" orientation="right" />
                       <Tooltip content={<ChartTooltipContent />} />
                       <Legend />
-
                       {optTime === "t_abre" && (
                         <Line yAxisId="left" type="monotone" dataKey="to" name="TAbre (ms)" stroke={C.OPEN} dot={false} />
                       )}
@@ -368,6 +387,7 @@ const Analytics: React.FC = () => {
                 </ChartContainer>
               </div>
             </TabsContent>
+
             {/* ===================== VIBRAÇÃO ===================== */}
             <TabsContent value="vibracao" className="pt-4">
               <div className="flex items-center gap-3 mb-3">
@@ -377,8 +397,7 @@ const Analytics: React.FC = () => {
                   value={optVib}
                   onChange={(e) => setOptVib(e.target.value as typeof optVib)}
                 >
-                  <option value="accel">Aceleração (A{act})</option>
-                  <option value="gyro">Giro (A{act})</option>
+                  <option value="vibracao">Vibração (média/min × runtime)</option>
                   <option value="vib_compare">Comparativo A1 × A2 (ax)</option>
                 </select>
               </div>
@@ -386,29 +405,42 @@ const Analytics: React.FC = () => {
               <div className="h-64 sm:h-72 md:h-80 lg:h-[28rem]">
                 <ChartContainer config={{}}>
                   {optVib !== "vib_compare" ? (
-                    <LineChart data={mpuChartData}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="ts" />
-                      <YAxis />
-                      <Tooltip content={<ChartTooltipContent />} />
-                      <Legend />
+                    // usa minute-agg — x: runtime_s, y: vib_avg (média do minuto) + empty state
+                    (() => {
+                      const points = vibAggAct
+                        .filter((r) => typeof r.vib_avg === "number" && typeof r.runtime_s === "number")
+                        .map((r) => ({ minute: r.minute, runtime: r.runtime_s, vib: r.vib_avg as number }));
 
-                      {optVib === "accel" && (
-                        <>
-                          <Line type="monotone" dataKey="ax" name="ax (g)" stroke="#4f46e5" dot={false} />
-                          <Line type="monotone" dataKey="ay" name="ay (g)" stroke="#0ea5e9" dot={false} />
-                          <Line type="monotone" dataKey="az" name="az (g)" stroke="#22d3ee" dot={false} />
-                        </>
-                      )}
-                      {optVib === "gyro" && (
-                        <>
-                          <Line type="monotone" dataKey="gx" name="gx (dps)" stroke="#f43f5e" dot={false} />
-                          <Line type="monotone" dataKey="gy" name="gy (dps)" stroke="#f97316" dot={false} />
-                          <Line type="monotone" dataKey="gz" name="gz (dps)" stroke="#84cc16" dot={false} />
-                        </>
-                      )}
-                    </LineChart>
+                      if (!points.length) {
+                        return (
+                          <div className="w-full h-full flex items-center justify-center text-sm opacity-70">
+                            Sem pontos para exibir nesta janela. Aguarde a próxima média de 1 minuto
+                            ou verifique o endpoint /metrics/minute-agg.
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <LineChart data={points}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="runtime" label={{ value: "Runtime (s/min)", position: "insideBottom", offset: -2 }} />
+                          <YAxis dataKey="vib" label={{ value: "Vibração (média/min)", angle: -90, position: "insideLeft" }} />
+                          <Tooltip
+                            content={<ChartTooltipContent />}
+                            formatter={(val: number, name) =>
+                              name === "vib" ? [`${val.toFixed(3)}`, "Vibração (avg)"] : [`${val}s`, "Runtime"]
+                            }
+                            labelFormatter={(_, p: any) =>
+                              p?.[0]?.payload?.minute ? new Date(p[0].payload.minute).toLocaleTimeString() : ""
+                            }
+                          />
+                          <Legend />
+                          <Line type="monotone" dataKey="vib" name={`Vibração A${act}`} stroke={act === 1 ? C.A1 : C.A2} dot={false} strokeWidth={2} />
+                        </LineChart>
+                      );
+                    })()
                   ) : (
+                    // comparação A1×A2 (ax) — mantém o que você já tinha
                     <LineChart
                       data={(() => {
                         const m = new Map<string, { ts: string; axA1?: number; axA2?: number }>();
@@ -430,6 +462,9 @@ const Analytics: React.FC = () => {
                     </LineChart>
                   )}
                 </ChartContainer>
+                <div className="text-xs opacity-70 mt-2">
+                  Atualiza a cada 60 s · Janela -2h · Atuador A{act}
+                </div>
               </div>
             </TabsContent>
           </Tabs>

@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useLive } from "@/context/LiveContext";
 import { getMpuLatestSafe, getActuatorTimings, ActuatorTimingsResp } from "@/lib/api";
 
-const POLL_MS = 3000;
+const POLL_MS = 1000;
 
 type Props = { selectedId: 1 | 2 };
 type MpuVec = { ax?: number; ay?: number; az?: number } | null;
