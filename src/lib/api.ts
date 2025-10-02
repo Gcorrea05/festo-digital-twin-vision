@@ -233,6 +233,10 @@ export async function getOPCHistoryByName(
 export const getOpcHistoryByName = getOPCHistoryByName;
 
 // Agregação por minuto (robusta a diferentes formatos)
+// ======================
+// Analytics – minute-agg e CPM×Runtime dedicado
+// ======================
+
 export type MinuteAgg = {
   minute: string;
   t_open_ms_avg: number | null;
@@ -259,14 +263,58 @@ export async function getMinuteAgg(act: "A1" | "A2", since: string): Promise<Min
     return Array.isArray(arr) ? (arr as MinuteAgg[]) : [];
   };
 
+  // caminho 1
   try {
     const r1 = await fetchJson<any>(`/metrics/minute-agg?${qs.toString()}`);
     const a1 = tryParse(r1);
     if (a1.length) return a1;
   } catch {}
 
+  // caminho 2 (fallback com /api prefixado)
   try {
     const r2 = await fetchJson<any>(`/api/metrics/minute-agg?${qs.toString()}`);
+    const a2 = tryParse(r2);
+    if (a2.length) return a2;
+  } catch {}
+
+  return [];
+}
+
+// ---- Novo endpoint dedicado para o gráfico "CPM × Runtime" ----
+export type CpmRuntimeMinuteRow = {
+  minute: string;             // ISO do minuto
+  cpm: number | null;         // ciclos no minuto
+  runtime_s: number | null;   // segundos ativos no minuto (0..60)
+};
+
+export async function getCpmRuntimeMinute(
+  act: "A1" | "A2",
+  since: string = "-2h"
+): Promise<CpmRuntimeMinuteRow[]> {
+  const qs = new URLSearchParams({ act, since });
+
+  const tryParse = (payload: any): CpmRuntimeMinuteRow[] => {
+    const arr =
+      (Array.isArray(payload) && payload) ||
+      payload?.data ||
+      payload?.items ||
+      payload?.rows ||
+      payload?.results ||
+      payload?.records ||
+      [];
+    return Array.isArray(arr) ? (arr as CpmRuntimeMinuteRow[]) : [];
+  };
+
+  // caminho preferido (com prefixo /api)
+  try {
+    const r1 = await fetchJson<any>(`/api/metrics/cpm-runtime-minute?${qs.toString()}`);
+    const a1 = tryParse(r1);
+    if (a1.length) return a1;
+  } catch {}
+
+  // fallback (sem prefixo /api)
+  try {
+    const r2 = await fetchJson<any>(`/metrics/cpm-runtime-minute?${qs.toString()}`);
     const a2 = tryParse(r2);
     if (a2.length) return a2;
   } catch {}

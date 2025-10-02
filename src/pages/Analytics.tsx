@@ -1,3 +1,4 @@
+// Analytics.tsx — bloco 1/3
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -7,7 +8,7 @@ import {
 } from "recharts";
 import { ChartContainer, ChartTooltipContent } from "@/components/ui/chart";
 import { useMpuIds, useMpuHistory } from "@/hooks/useMpu";
-import { getOPCHistory, getMinuteAgg } from "@/lib/api";
+import { getOPCHistory, getMinuteAgg, getCpmRuntimeMinute } from "@/lib/api";
 
 // Utils
 function toArray<T = any>(x: any): T[] {
@@ -57,20 +58,24 @@ type MpuPoint = {
   gx: number; gy: number; gz: number;
 };
 
-const POLL_MS = 15000;      // polling geral (produção/tempos)
-const VIB_POLL_MS = 60000;  // requisito: vibração atualiza a cada 60s
+const POLL_MS = 15000;
+const VIB_POLL_MS = 60000;
+const CPM_RT_POLL_MS = 60000;
 
 const Analytics: React.FC = () => {
   // ===== Toggle global de atuador (Modelo 1/2) =====
   const [act, setAct] = useState<1 | 2>(1);
 
   // ===== Seletor de 1 gráfico por guia =====
-  type ProducaoOpt = "cpm" | "cpm_runtime" | "cpm_compare";
+  type ProducaoOpt = "cpm_runtime" | "cpm_compare";
   type TemposOpt = "t_abre" | "t_fecha" | "t_ciclo" | "runtime" | "tempos_compare";
-  type VibraOpt = "vibracao" | "vib_compare"; // apenas 2 opções na aba Vibração
-  const [optProd, setOptProd] = useState<ProducaoOpt>("cpm");
+  type VibraOpt = "vibracao" | "vib_compare";
+  const [optProd, setOptProd] = useState<ProducaoOpt>("cpm_runtime");
   const [optTime, setOptTime] = useState<TemposOpt>("t_ciclo");
   const [optVib, setOptVib] = useState<VibraOpt>("vibracao");
+
+  // ===== NOVO: dataset CPM×Runtime via endpoint dedicado (polling 60s) =====
+  const [cpmRtData, setCpmRtData] = useState<{ minute: string; cpm: number | null; runtime_s: number | null }[]>([]);
 
   // ===== IDs de MPU e mapeamento (A1 -> idx 0, A2 -> idx 1) =====
   const { ids } = useMpuIds();
@@ -99,6 +104,7 @@ const Analytics: React.FC = () => {
       };
     });
   };
+
   // série principal (atuador selecionado) – ainda usada em "comparação"
   const actMpuRef = useRef<MpuPoint[]>([]);
   const [mpuChartData, setMpuChartData] = useState<MpuPoint[]>([]);
@@ -117,7 +123,7 @@ const Analytics: React.FC = () => {
   useEffect(() => setMpuA1Data(parseMpu(rowsA1 as any)), [rowsA1]);
   useEffect(() => setMpuA2Data(parseMpu(rowsA2 as any)), [rowsA2]);
 
-  // ===== Produção (CPM 60m via histórico S2) =====
+  // ===== Produção (CPM 60m via histórico S2) — ainda usado no comparativo =====
   const [cpmSeries, setCpmSeries] = useState<CpmPoint[]>([]);
   const loadCpm60 = useCallback(async () => {
     const now = Date.now();
@@ -144,7 +150,7 @@ const Analytics: React.FC = () => {
     setCpmSeries(keys.map((k) => ({ t: k, ...(buckets.get(k) ?? { A1: 0, A2: 0 }) })));
   }, []);
   useEffect(() => { loadCpm60(); const id = setInterval(loadCpm60, POLL_MS); return () => clearInterval(id); }, [loadCpm60]);
-
+// Analytics.tsx — bloco 2/3
   // ===== Métricas agregadas por minuto (Tempos/Runtime/CPM) – polling geral =====
   const [aggA1, setAggA1] = useState<MinuteAgg[]>([]);
   const [aggA2, setAggA2] = useState<MinuteAgg[]>([]);
@@ -158,57 +164,59 @@ const Analytics: React.FC = () => {
   }, []);
   useEffect(() => { loadAgg(); const id = setInterval(loadAgg, POLL_MS); return () => clearInterval(id); }, [loadAgg]);
 
+  // ===== NOVO: polling 60s para CPM×Runtime =====
+  useEffect(() => {
+    let timer: number | null = null;
+    const fetchCpmRt = async () => {
+      const actLabel = act === 1 ? "A1" : "A2";
+      const rows = await getCpmRuntimeMinute(actLabel as "A1" | "A2", "-2h").catch(() => []);
+      setCpmRtData(Array.isArray(rows) ? rows : []);
+    };
+    fetchCpmRt();
+    timer = window.setInterval(fetchCpmRt, CPM_RT_POLL_MS);
+    return () => { if (timer) window.clearInterval(timer); };
+  }, [act]);
+
   // ===== Métricas agregadas por minuto apenas p/ VIBRAÇÃO – requisito 60s =====
   const [vibAggAct, setVibAggAct] = useState<MinuteAgg[]>([]);
   useEffect(() => {
     let timer: number | null = null;
-
-    // (1) preenche imediato com o que já temos carregado (agg geral) -> evita “gráfico vazio”
-    setVibAggAct(act === 1 ? aggA1 : aggA2);
-
-    // (2) faz o fetch específico desta aba (média/min) a cada 60s
     const fetchVib = async () => {
       const actLabel = act === 1 ? "A1" : "A2";
       const data = await getMinuteAgg(actLabel as "A1" | "A2", "-2h").catch(() => [] as MinuteAgg[]);
-      if (Array.isArray(data)) setVibAggAct(data);
+      setVibAggAct(Array.isArray(data) ? data : []);
     };
-
     fetchVib();
     timer = window.setInterval(fetchVib, VIB_POLL_MS);
     return () => { if (timer) window.clearInterval(timer); };
-  }, [act, aggA1, aggA2]);
+  }, [act]);
 
   const dataAgg = act === 1 ? aggA1 : aggA2;
   const colorAct = act === 1 ? C.A1 : C.A2;
 
-  // ===== Fallback no cliente: média/min a partir do histórico bruto =====
+  // ===== Fallback no cliente: média/min a partir do histórico bruto (p/ vibração) =====
   const vibClientFallback = useMemo(() => {
-    const src = mpuChartData; // pontos do atuador atual
+    const src = mpuChartData;
     if (!src?.length) return [];
-    // agrupa por minuto ISO
     const byMin = new Map<string, { sum: number; n: number }>();
     for (const p of src) {
       const t = new Date(p.ts);
       const minuteIso = new Date(Date.UTC(
         t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate(), t.getUTCHours(), t.getUTCMinutes(), 0, 0
       )).toISOString();
-      // magnitude da aceleração (g) — robusto mesmo se faltar algum eixo
       const ax = Number(p.ax ?? 0), ay = Number(p.ay ?? 0), az = Number(p.az ?? 0);
       const mag = Math.sqrt(ax*ax + ay*ay + az*az);
       const acc = byMin.get(minuteIso) ?? { sum: 0, n: 0 };
       acc.sum += mag; acc.n += 1;
       byMin.set(minuteIso, acc);
     }
-    // junta com runtime do mesmo minuto
     const runtimeByMinute = new Map<string, number>();
     for (const r of dataAgg) runtimeByMinute.set(r.minute, r.runtime_s ?? 0);
     const out: { minute: string; vib: number; runtime: number }[] = [];
-    for (const [minute, v] of byMin) {
-      const avg = v.n ? v.sum / v.n : 0;
-      out.push({ minute, vib: avg, runtime: runtimeByMinute.get(minute) ?? 0 });
-    }
+    for (const [minute, v] of byMin) out.push({ minute, vib: v.n ? v.sum / v.n : 0, runtime: runtimeByMinute.get(minute) ?? 0 });
     return out.sort((a, b) => a.minute.localeCompare(b.minute));
   }, [mpuChartData, dataAgg]);
+
   // ===== UI =====
   return (
     <div className="max-w-[1400px] mx-auto px-2 sm:px-4">
@@ -260,7 +268,7 @@ const Analytics: React.FC = () => {
               </TabsTrigger>
             </TabsList>
 
-            {/* PRODUÇÃO */}
+            {/* ===================== PRODUÇÃO ===================== */}
             <TabsContent value="producao" className="pt-4">
               <div className="flex items-center gap-3 mb-3">
                 <span className="text-sm">Gráfico:</span>
@@ -269,7 +277,6 @@ const Analytics: React.FC = () => {
                   value={optProd}
                   onChange={(e) => setOptProd(e.target.value as typeof optProd)}
                 >
-                  <option value="cpm">CPM por minuto (A{act})</option>
                   <option value="cpm_runtime">CPM × Runtime (A{act})</option>
                   <option value="cpm_compare">Comparativo A1 × A2 (CPM + Runtime)</option>
                 </select>
@@ -278,17 +285,14 @@ const Analytics: React.FC = () => {
               <div className="h-64 sm:h-72 md:h-80 lg:h-[28rem]">
                 {(() => {
                   const chartEl =
-                    optProd === "cpm" ? (
-                      <BarChart data={cpmSeries.map((r) => ({ t: r.t, cpm: act === 1 ? r.A1 : r.A2 }))}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="t" />
-                        <YAxis allowDecimals={false} />
-                        <Tooltip content={<ChartTooltipContent />} />
-                        <Legend />
-                        <Bar dataKey="cpm" name={`CPM A${act}`} fill={colorAct} />
-                      </BarChart>
-                    ) : optProd === "cpm_runtime" ? (
-                      <BarChart data={dataAgg.map((r) => ({ minute: r.minute, cpm: r.cpm, runtime: r.runtime_s }))}>
+                    optProd === "cpm_runtime" ? (
+                      <BarChart
+                        data={cpmRtData.map((r) => ({
+                          minute: r.minute,
+                          cpm: r.cpm ?? 0,
+                          runtime: r.runtime_s ?? 0,
+                        }))}
+                      >
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis dataKey="minute" />
                         <YAxis yAxisId="left" />
@@ -320,16 +324,20 @@ const Analytics: React.FC = () => {
                         <Line yAxisId="right" type="monotone" dataKey="rtA2" name="Runtime A2 (s)" stroke={C.RUNTIME_A2} dot={false} />
                       </BarChart>
                     );
+
                   return <ChartContainer config={{}}>{chartEl}</ChartContainer>;
                 })()}
               </div>
             </TabsContent>
-
-            {/* TEMPOS */}
+            {/* ===================== TEMPOS ===================== */}
             <TabsContent value="tempos" className="pt-4">
               <div className="flex items-center gap-3 mb-3">
                 <span className="text-sm">Gráfico:</span>
-                <select className="border rounded-md px-2 py-1 bg-background" value={optTime} onChange={(e) => setOptTime(e.target.value as typeof optTime)}>
+                <select
+                  className="border rounded-md px-2 py-1 bg-background"
+                  value={optTime}
+                  onChange={(e) => setOptTime(e.target.value as typeof optTime)}
+                >
                   <option value="t_abre">TAbre (A{act})</option>
                   <option value="t_fecha">TFecha (A{act})</option>
                   <option value="t_ciclo">TCiclo (A{act})</option>
@@ -341,7 +349,15 @@ const Analytics: React.FC = () => {
               <div className="h-64 sm:h-72 md:h-80 lg:h-[28rem]">
                 <ChartContainer config={{}}>
                   {optTime !== "tempos_compare" ? (
-                    <LineChart data={dataAgg.map((r) => ({ minute: r.minute, to: r.t_open_ms_avg, tf: r.t_close_ms_avg, tc: r.t_cycle_ms_avg, runtime: r.runtime_s }))}>
+                    <LineChart
+                      data={dataAgg.map((r) => ({
+                        minute: r.minute,
+                        to: r.t_open_ms_avg,
+                        tf: r.t_close_ms_avg,
+                        tc: r.t_cycle_ms_avg,
+                        runtime: r.runtime_s,
+                      }))}
+                    >
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="minute" />
                       <YAxis yAxisId="left" />
@@ -382,7 +398,7 @@ const Analytics: React.FC = () => {
               </div>
             </TabsContent>
 
-            {/* VIBRAÇÃO */}
+            {/* ===================== VIBRAÇÃO ===================== */}
             <TabsContent value="vibracao" className="pt-4">
               <div className="flex items-center gap-3 mb-3">
                 <span className="text-sm">Gráfico:</span>
@@ -396,7 +412,6 @@ const Analytics: React.FC = () => {
                 <ChartContainer config={{}}>
                   {optVib !== "vib_compare" ? (
                     (() => {
-                      // usa a API; se vier vazia, usa o fallback calculado no cliente
                       const apiPoints = vibAggAct
                         .filter((r) => typeof r.vib_avg === "number" && typeof r.runtime_s === "number")
                         .map((r) => ({ minute: r.minute, runtime: r.runtime_s, vib: r.vib_avg as number }));
@@ -405,8 +420,7 @@ const Analytics: React.FC = () => {
                       if (!points.length) {
                         return (
                           <div className="w-full h-full flex items-center justify-center text-sm opacity-70">
-                            Sem pontos para exibir nesta janela. Aguarde a próxima média de 1 minuto
-                            ou verifique o endpoint /metrics/minute-agg.
+                            Sem pontos para exibir nesta janela.
                           </div>
                         );
                       }
