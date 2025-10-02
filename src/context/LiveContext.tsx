@@ -9,9 +9,10 @@ import React, {
 
 import {
   getHealth,
-  getLiveActuatorsState, // helper do api.ts (traz system.status + actuators)
   getMpuIds,
   getLatestMPU,
+  // fast path direto pro backend (usa rota que você configurou no api.ts)
+  getActuatorsStateFast,
 } from "@/lib/api";
 
 export type LiveMode = "live" | "playback";
@@ -25,7 +26,6 @@ export type ActuatorSnapshot = {
   facets: Facets;            // S1=Recuado, S2=Avançado (0/0 = transição)
   cpm: number;
   rms: number;
-  // opcionais para contagem de ciclos
   cycles?: number;
   totalCycles?: number;
 };
@@ -40,9 +40,7 @@ export type Snapshot = {
       transmission?: string;
       control?: string;
     };
-    /** ISO UTC do início do processo no backend (para runtime) */
     started_at?: string;
-    /** runtime em milissegundos, calculado no front com base em started_at */
     runtime_ms?: number;
   };
   actuators: ActuatorSnapshot[];
@@ -80,7 +78,7 @@ type Props = { children: ReactNode };
 // ---- helpers ----
 function normSystemStatus(s: any): "ok" | "down" | "unknown" {
   const v = String(s ?? "").toLowerCase();
-  if (v.includes("ok") || v.includes("operational")) return "ok";
+  if (v.includes("ok")) return "ok";
   if (v.includes("down") || v.includes("offline")) return "down";
   return "unknown";
 }
@@ -113,27 +111,44 @@ export function LiveProvider({ children }: Props) {
   const [mpu, setMpu] = useState<Snapshot["mpu"]>(null);
   const mpuChosenIdRef = useRef<string | null>(null);
 
-  // --- memória local: último estado estável por atuador (evita “—”/piscadas em 0/0) ---
+  // último estado estável por atuador (evita “piscadas” em 0/0)
   const lastStableRef = useRef<Record<number, "ABERTO" | "RECUADO" | undefined>>({});
 
-  // -------- Poll 1: System + Actuators + Ciclos/CPM (400 ms) --------
+  // controle anti-fila / anti-resposta atrasada
+  const reqSeqActRef = useRef(0);
+  const reqSeqMpuRef = useRef(0);
+  const visibleRef = useRef<boolean>(typeof document !== "undefined" ? !document.hidden : true);
+
+  // -------- Poll 0: observar visibilidade da aba (pausa/resume) --------
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onVis = () => { visibleRef.current = !document.hidden; };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
+  // -------- Poll 1: Actuators FAST PATH (500 ms) + anti-fila --------
   useEffect(() => {
     if (mode !== "live") return;
     let timer: number | null = null;
     let cancelled = false;
 
+    const LOOP_MS = 500;
+
     const tick = async () => {
       try {
-        const live = await getLiveActuatorsState().catch(async () => {
-          const h = await getHealth().catch(() => ({ status: "offline" }));
-          return {
-            ts: new Date().toISOString(),
-            system: { status: (h?.status ?? "offline").toString() },
-            actuators: [] as any[],
-          };
-        });
+        if (!visibleRef.current) {
+          // se aba oculta, espera um pouco e volta
+          timer = window.setTimeout(tick, 800) as unknown as number;
+          return;
+        }
 
-        const sys = normSystemStatus(live?.system?.status);
+        const mySeq = ++reqSeqActRef.current;
+        const live = await getActuatorsStateFast();
+
+        // se chegou resposta antiga, descarta
+        if (cancelled || mySeq !== reqSeqActRef.current) return;
+
         const tsNow = new Date().toISOString();
 
         const acts: ActuatorSnapshot[] = (live?.actuators ?? [])
@@ -141,21 +156,21 @@ export function LiveProvider({ children }: Props) {
             const id = Number(a?.id ?? a?.actuator_id ?? 0);
             if (!id) return null;
 
-            // 1) tenta deduzir facets a partir de state textual
-            const st = String(a?.state ?? "").toUpperCase(); // RECUADO | AVANÇADO
+            // 1) deduz facets a partir de state textual: RECUADO|AVANÇADO
+            const st = String(a?.state ?? "").toUpperCase();
             let facetsFromState: Facets | null = null;
             if (st.includes("RECU")) facetsFromState = { S1: 1, S2: 0 };
             else if (st.includes("AVAN")) facetsFromState = { S1: 0, S2: 1 };
 
-            // 2) fallback p/ legado (facets/recuado/avancado)
+            // 2) fallback p/ legado (se existir)
             const to01 = (v: any) => (v === true || v === 1 ? 1 : v === false || v === 0 ? 0 : 0);
-            const s1b = a?.facets?.S1 ?? a?.recuado ?? null;
-            const s2b = a?.facets?.S2 ?? a?.avancado ?? null;
-            let facets: Facets = facetsFromState ?? { S1: to01(s1b) as 0 | 1, S2: to01(s2b) as 0 | 1 };
+            const s1b = (a?.facets && a.facets.S1 != null) ? a.facets.S1 : a?.recuado ?? null;
+            const s2b = (a?.facets && a.facets.S2 != null) ? a.facets.S2 : a?.avancado ?? null;
+            const facets: Facets = facetsFromState ?? { S1: to01(s1b) as 0 | 1, S2: to01(s2b) as 0 | 1 };
 
-            // 3) transição (0/0): mantenha último estável conhecido
+            // 3) transição (0/0): mantém último estável
             if (facets.S1 === 0 && facets.S2 === 0 && lastStableRef.current[id]) {
-              // nada a mudar — as telas usarão o estável como display
+              // mantém
             } else if (facets.S1 === 1 && facets.S2 === 0) {
               lastStableRef.current[id] = "RECUADO";
             } else if (facets.S1 === 0 && facets.S2 === 1) {
@@ -177,44 +192,35 @@ export function LiveProvider({ children }: Props) {
           })
           .filter(Boolean) as ActuatorSnapshot[];
 
-        if (!cancelled) {
-          setSystemStatus(sys);
-          setSystemComponents(undefined);
-
-          // evita renders desnecessários
-          setActuators((prev) => {
-            const sameLen = prev.length === acts.length;
-            const same =
-              sameLen &&
-              prev.every((p, i) => {
-                const n = acts[i];
-                return (
-                  p.id === n.id &&
-                  p.facets.S1 === n.facets.S1 &&
-                  p.facets.S2 === n.facets.S2 &&
-                  p.fsm.state === n.fsm.state &&
-                  p.cpm === n.cpm &&
-                  p.totalCycles === n.totalCycles
-                );
-              });
-            return same ? prev : acts;
-          });
-        }
+        setActuators((prev) => {
+          const sameLen = prev.length === acts.length;
+          const same =
+            sameLen &&
+            prev.every((p, i) => {
+              const n = acts[i];
+              return (
+                p.id === n.id &&
+                p.facets.S1 === n.facets.S1 &&
+                p.facets.S2 === n.facets.S2 &&
+                p.fsm.state === n.fsm.state &&
+                p.cpm === n.cpm &&
+                p.totalCycles === n.totalCycles
+              );
+            });
+          return same ? prev : acts;
+        });
       } catch {
-        if (!cancelled) {
-          setSystemStatus("down");
-          setSystemComponents(undefined);
-          setActuators([]);
-        }
+        if (!cancelled) setActuators([]);
       } finally {
         if (!cancelled) {
-          timer = window.setTimeout(tick, 400) as unknown as number; // 0,4s
+          timer = window.setTimeout(tick, LOOP_MS) as unknown as number;
         }
       }
     };
 
     tick();
     return () => {
+      cancelled = true;
       if (timer) clearTimeout(timer);
     };
   }, [mode]);
@@ -229,13 +235,9 @@ export function LiveProvider({ children }: Props) {
         if (cancelled) return;
         const status = normSystemStatus(h?.status);
         setSystemStatus(status);
-        if (h?.started_at) {
-          setStartedAt(h.started_at);
-        }
+        if (h?.started_at) setStartedAt(h.started_at);
       } catch {
-        if (!cancelled) {
-          setSystemStatus("down");
-        }
+        if (!cancelled) setSystemStatus("down");
       }
     };
     pull();
@@ -246,7 +248,7 @@ export function LiveProvider({ children }: Props) {
     };
   }, [mode]);
 
-  // -------- Timer local: atualiza runtime_ms a cada 1s, se temos started_at --------
+  // -------- Timer local: runtime_ms --------
   useEffect(() => {
     if (mode !== "live") return;
     if (!startedAt) {
@@ -264,14 +266,21 @@ export function LiveProvider({ children }: Props) {
     return () => clearInterval(id);
   }, [mode, startedAt]);
 
-  // -------- Poll 2: MPU latest (1 s) --------
+  // -------- Poll 2: MPU latest (1 s) + anti-fila --------
   useEffect(() => {
     if (mode !== "live") return;
     let timer: number | null = null;
     let cancelled = false;
 
+    const LOOP_MS = 1000;
+
     const discoverAndTick = async () => {
       try {
+        if (!visibleRef.current) {
+          timer = window.setTimeout(discoverAndTick, 1200) as unknown as number;
+          return;
+        }
+
         if (!mpuChosenIdRef.current) {
           const ids = await getMpuIds().catch(() => []);
           if (ids && ids.length) {
@@ -279,41 +288,43 @@ export function LiveProvider({ children }: Props) {
           }
         }
         if (mpuChosenIdRef.current) {
+          const mySeq = ++reqSeqMpuRef.current;
           const raw = await getLatestMPU(mpuChosenIdRef.current as any).catch(() => null);
-          if (!cancelled) {
-            if (!raw) {
-              setMpu(null);
-            } else {
-              setMpu({
-                ts: String(raw.ts_utc ?? new Date().toISOString()),
-                id: String(raw.id ?? "MPU"),
-                ax: Number(raw.ax ?? 0),
-                ay: Number(raw.ay ?? 0),
-                az: Number(raw.az ?? 0),
-                gx: Number((raw as any).gx ?? (raw as any).gx_dps ?? 0),
-                gy: Number((raw as any).gy ?? (raw as any).gy_dps ?? 0),
-                gz: Number((raw as any).gz ?? (raw as any).gz_dps ?? 0),
-                temp_c: Number((raw as any).temp_c ?? 0),
-              });
-            }
+          if (cancelled || mySeq !== reqSeqMpuRef.current) return;
+
+          if (!raw) {
+            setMpu(null);
+          } else {
+            setMpu({
+              ts: String(raw.ts_utc ?? new Date().toISOString()),
+              id: String(raw.id ?? "MPU"),
+              ax: Number(raw.ax ?? 0),
+              ay: Number(raw.ay ?? 0),
+              az: Number(raw.az ?? 0),
+              gx: Number((raw as any).gx ?? (raw as any).gx_dps ?? 0),
+              gy: Number((raw as any).gy ?? (raw as any).gy_dps ?? 0),
+              gz: Number((raw as any).gz ?? (raw as any).gz_dps ?? 0),
+              temp_c: Number((raw as any).temp_c ?? 0),
+            });
           }
         }
       } catch {
         if (!cancelled) setMpu(null);
       } finally {
         if (!cancelled) {
-          timer = window.setTimeout(discoverAndTick, 1000) as unknown as number;
+          timer = window.setTimeout(discoverAndTick, LOOP_MS) as unknown as number;
         }
       }
     };
 
     discoverAndTick();
     return () => {
+      cancelled = true;
       if (timer) clearTimeout(timer);
     };
   }, [mode]);
 
-  // -------- Composer: monta o Snapshot final quando algo muda --------
+  // -------- Composer: monta o Snapshot final --------
   useEffect(() => {
     if (mode !== "live") return;
     const snap: Snapshot = {

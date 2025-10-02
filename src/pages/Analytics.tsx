@@ -67,8 +67,7 @@ const Analytics: React.FC = () => {
   // ===== Seletor de 1 gráfico por guia =====
   type ProducaoOpt = "cpm" | "cpm_runtime" | "cpm_compare";
   type TemposOpt = "t_abre" | "t_fecha" | "t_ciclo" | "runtime" | "tempos_compare";
-  // Apenas 2 opções na aba Vibração
-  type VibraOpt = "vibracao" | "vib_compare";
+  type VibraOpt = "vibracao" | "vib_compare"; // apenas 2 opções na aba Vibração
   const [optProd, setOptProd] = useState<ProducaoOpt>("cpm");
   const [optTime, setOptTime] = useState<TemposOpt>("t_ciclo");
   const [optVib, setOptVib] = useState<VibraOpt>("vibracao");
@@ -100,7 +99,6 @@ const Analytics: React.FC = () => {
       };
     });
   };
-
   // série principal (atuador selecionado) – ainda usada em "comparação"
   const actMpuRef = useRef<MpuPoint[]>([]);
   const [mpuChartData, setMpuChartData] = useState<MpuPoint[]>([]);
@@ -118,6 +116,7 @@ const Analytics: React.FC = () => {
   const [mpuA2Data, setMpuA2Data] = useState<MpuPoint[]>([]);
   useEffect(() => setMpuA1Data(parseMpu(rowsA1 as any)), [rowsA1]);
   useEffect(() => setMpuA2Data(parseMpu(rowsA2 as any)), [rowsA2]);
+
   // ===== Produção (CPM 60m via histórico S2) =====
   const [cpmSeries, setCpmSeries] = useState<CpmPoint[]>([]);
   const loadCpm60 = useCallback(async () => {
@@ -130,7 +129,7 @@ const Analytics: React.FC = () => {
       const hist = await getOPCHistory({ actuatorId: id, facet: "S2", since: "-60m", asc: true });
       for (let i = 1; i < hist.length; i++) {
         const prev = Number(hist[i - 1].value);
-               const curr = Number(hist[i].value);
+        const curr = Number(hist[i].value);
         if (prev === 0 && curr === 1) {
           const ts = new Date(hist[i].ts).getTime();
           if (ts >= start) {
@@ -182,6 +181,34 @@ const Analytics: React.FC = () => {
   const dataAgg = act === 1 ? aggA1 : aggA2;
   const colorAct = act === 1 ? C.A1 : C.A2;
 
+  // ===== Fallback no cliente: média/min a partir do histórico bruto =====
+  const vibClientFallback = useMemo(() => {
+    const src = mpuChartData; // pontos do atuador atual
+    if (!src?.length) return [];
+    // agrupa por minuto ISO
+    const byMin = new Map<string, { sum: number; n: number }>();
+    for (const p of src) {
+      const t = new Date(p.ts);
+      const minuteIso = new Date(Date.UTC(
+        t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate(), t.getUTCHours(), t.getUTCMinutes(), 0, 0
+      )).toISOString();
+      // magnitude da aceleração (g) — robusto mesmo se faltar algum eixo
+      const ax = Number(p.ax ?? 0), ay = Number(p.ay ?? 0), az = Number(p.az ?? 0);
+      const mag = Math.sqrt(ax*ax + ay*ay + az*az);
+      const acc = byMin.get(minuteIso) ?? { sum: 0, n: 0 };
+      acc.sum += mag; acc.n += 1;
+      byMin.set(minuteIso, acc);
+    }
+    // junta com runtime do mesmo minuto
+    const runtimeByMinute = new Map<string, number>();
+    for (const r of dataAgg) runtimeByMinute.set(r.minute, r.runtime_s ?? 0);
+    const out: { minute: string; vib: number; runtime: number }[] = [];
+    for (const [minute, v] of byMin) {
+      const avg = v.n ? v.sum / v.n : 0;
+      out.push({ minute, vib: avg, runtime: runtimeByMinute.get(minute) ?? 0 });
+    }
+    return out.sort((a, b) => a.minute.localeCompare(b.minute));
+  }, [mpuChartData, dataAgg]);
   // ===== UI =====
   return (
     <div className="max-w-[1400px] mx-auto px-2 sm:px-4">
@@ -232,7 +259,8 @@ const Analytics: React.FC = () => {
                 Vibração
               </TabsTrigger>
             </TabsList>
-            {/* ===================== PRODUÇÃO ===================== */}
+
+            {/* PRODUÇÃO */}
             <TabsContent value="producao" className="pt-4">
               <div className="flex items-center gap-3 mb-3">
                 <span className="text-sm">Gráfico:</span>
@@ -251,12 +279,7 @@ const Analytics: React.FC = () => {
                 {(() => {
                   const chartEl =
                     optProd === "cpm" ? (
-                      <BarChart
-                        data={cpmSeries.map((r) => ({
-                          t: r.t,
-                          cpm: act === 1 ? r.A1 : r.A2,
-                        }))}
-                      >
+                      <BarChart data={cpmSeries.map((r) => ({ t: r.t, cpm: act === 1 ? r.A1 : r.A2 }))}>
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis dataKey="t" />
                         <YAxis allowDecimals={false} />
@@ -265,13 +288,7 @@ const Analytics: React.FC = () => {
                         <Bar dataKey="cpm" name={`CPM A${act}`} fill={colorAct} />
                       </BarChart>
                     ) : optProd === "cpm_runtime" ? (
-                      <BarChart
-                        data={dataAgg.map((r) => ({
-                          minute: r.minute,
-                          cpm: r.cpm,
-                          runtime: r.runtime_s,
-                        }))}
-                      >
+                      <BarChart data={dataAgg.map((r) => ({ minute: r.minute, cpm: r.cpm, runtime: r.runtime_s }))}>
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis dataKey="minute" />
                         <YAxis yAxisId="left" />
@@ -303,21 +320,16 @@ const Analytics: React.FC = () => {
                         <Line yAxisId="right" type="monotone" dataKey="rtA2" name="Runtime A2 (s)" stroke={C.RUNTIME_A2} dot={false} />
                       </BarChart>
                     );
-
                   return <ChartContainer config={{}}>{chartEl}</ChartContainer>;
                 })()}
               </div>
             </TabsContent>
 
-            {/* ===================== TEMPOS ===================== */}
+            {/* TEMPOS */}
             <TabsContent value="tempos" className="pt-4">
               <div className="flex items-center gap-3 mb-3">
                 <span className="text-sm">Gráfico:</span>
-                <select
-                  className="border rounded-md px-2 py-1 bg-background"
-                  value={optTime}
-                  onChange={(e) => setOptTime(e.target.value as typeof optTime)}
-                >
+                <select className="border rounded-md px-2 py-1 bg-background" value={optTime} onChange={(e) => setOptTime(e.target.value as typeof optTime)}>
                   <option value="t_abre">TAbre (A{act})</option>
                   <option value="t_fecha">TFecha (A{act})</option>
                   <option value="t_ciclo">TCiclo (A{act})</option>
@@ -329,36 +341,18 @@ const Analytics: React.FC = () => {
               <div className="h-64 sm:h-72 md:h-80 lg:h-[28rem]">
                 <ChartContainer config={{}}>
                   {optTime !== "tempos_compare" ? (
-                    <LineChart
-                      data={dataAgg.map((r) => ({
-                        minute: r.minute,
-                        to: r.t_open_ms_avg,
-                        tf: r.t_close_ms_avg,
-                        tc: r.t_cycle_ms_avg,
-                        runtime: r.runtime_s,
-                      }))}
-                    >
+                    <LineChart data={dataAgg.map((r) => ({ minute: r.minute, to: r.t_open_ms_avg, tf: r.t_close_ms_avg, tc: r.t_cycle_ms_avg, runtime: r.runtime_s }))}>
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis dataKey="minute" />
                       <YAxis yAxisId="left" />
                       <YAxis yAxisId="right" orientation="right" />
                       <Tooltip content={<ChartTooltipContent />} />
                       <Legend />
-                      {optTime === "t_abre" && (
-                        <Line yAxisId="left" type="monotone" dataKey="to" name="TAbre (ms)" stroke={C.OPEN} dot={false} />
-                      )}
-                      {optTime === "t_fecha" && (
-                        <Line yAxisId="left" type="monotone" dataKey="tf" name="TFecha (ms)" stroke={C.CLOSE} dot={false} />
-                      )}
-                      {optTime === "t_ciclo" && (
-                        <Line yAxisId="left" type="monotone" dataKey="tc" name="TCiclo (ms)" stroke={C.CYCLE} dot={false} />
-                      )}
-                      {optTime === "runtime" && (
-                        <Line yAxisId="right" type="monotone" dataKey="runtime" name="Runtime (s)" stroke={act === 1 ? C.RUNTIME_A1 : C.RUNTIME_A2} dot={false} />
-                      )}
-                      {optTime !== "runtime" && (
-                        <Line yAxisId="right" type="monotone" dataKey="runtime" name="Runtime (s)" stroke={act === 1 ? C.RUNTIME_A1 : C.RUNTIME_A2} dot={false} />
-                      )}
+                      {optTime === "t_abre" && <Line yAxisId="left" type="monotone" dataKey="to" name="TAbre (ms)" stroke={C.OPEN} dot={false} />}
+                      {optTime === "t_fecha" && <Line yAxisId="left" type="monotone" dataKey="tf" name="TFecha (ms)" stroke={C.CLOSE} dot={false} />}
+                      {optTime === "t_ciclo" && <Line yAxisId="left" type="monotone" dataKey="tc" name="TCiclo (ms)" stroke={C.CYCLE} dot={false} />}
+                      {optTime === "runtime" && <Line yAxisId="right" type="monotone" dataKey="runtime" name="Runtime (s)" stroke={act === 1 ? C.RUNTIME_A1 : C.RUNTIME_A2} dot={false} />}
+                      {optTime !== "runtime" && <Line yAxisId="right" type="monotone" dataKey="runtime" name="Runtime (s)" stroke={act === 1 ? C.RUNTIME_A1 : C.RUNTIME_A2} dot={false} />}
                     </LineChart>
                   ) : (
                     <LineChart
@@ -388,15 +382,11 @@ const Analytics: React.FC = () => {
               </div>
             </TabsContent>
 
-            {/* ===================== VIBRAÇÃO ===================== */}
+            {/* VIBRAÇÃO */}
             <TabsContent value="vibracao" className="pt-4">
               <div className="flex items-center gap-3 mb-3">
                 <span className="text-sm">Gráfico:</span>
-                <select
-                  className="border rounded-md px-2 py-1 bg-background"
-                  value={optVib}
-                  onChange={(e) => setOptVib(e.target.value as typeof optVib)}
-                >
+                <select className="border rounded-md px-2 py-1 bg-background" value={optVib} onChange={(e) => setOptVib(e.target.value as typeof optVib)}>
                   <option value="vibracao">Vibração (média/min × runtime)</option>
                   <option value="vib_compare">Comparativo A1 × A2 (ax)</option>
                 </select>
@@ -405,11 +395,12 @@ const Analytics: React.FC = () => {
               <div className="h-64 sm:h-72 md:h-80 lg:h-[28rem]">
                 <ChartContainer config={{}}>
                   {optVib !== "vib_compare" ? (
-                    // usa minute-agg — x: runtime_s, y: vib_avg (média do minuto) + empty state
                     (() => {
-                      const points = vibAggAct
+                      // usa a API; se vier vazia, usa o fallback calculado no cliente
+                      const apiPoints = vibAggAct
                         .filter((r) => typeof r.vib_avg === "number" && typeof r.runtime_s === "number")
                         .map((r) => ({ minute: r.minute, runtime: r.runtime_s, vib: r.vib_avg as number }));
+                      const points = apiPoints.length ? apiPoints : vibClientFallback;
 
                       if (!points.length) {
                         return (
@@ -440,7 +431,6 @@ const Analytics: React.FC = () => {
                       );
                     })()
                   ) : (
-                    // comparação A1×A2 (ax) — mantém o que você já tinha
                     <LineChart
                       data={(() => {
                         const m = new Map<string, { ts: string; axA1?: number; axA2?: number }>();

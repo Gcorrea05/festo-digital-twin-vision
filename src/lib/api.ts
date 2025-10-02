@@ -19,7 +19,6 @@ export async function fetchJson<T = any>(path: string, init?: RequestInit): Prom
   return (await res.json()) as T;
 }
 
-// POST helper (JSON)
 export async function postJson<T = any>(path: string, body: any, init?: RequestInit): Promise<T> {
   const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
   const res = await fetch(url, {
@@ -34,7 +33,7 @@ export async function postJson<T = any>(path: string, body: any, init?: RequestI
 }
 
 // ======================
-// Tipos (somente os usados)
+// Tipos
 // ======================
 export type StableState = "RECUADO" | "AVANÇADO" | "DESCONHECIDO";
 export type PendingTarget = "AV" | "REC" | null;
@@ -67,11 +66,18 @@ export type CyclesTotalResp = {
   ts: string; // ISO
 };
 
+// === Novo: shape nativo do /api/live/actuators/cpm ===
+export type ActuatorsCpmResp = {
+  ts: string;
+  actuators: { id: number; window_s: number; cycles: number; cpm: number }[];
+};
+
+// === Compat antigo (Monitoring) ===
 export type CyclesRateResp = {
   window_seconds: number;
-  pairs_count: number;
-  cycles: number;
-  cycles_per_second: number; // CPM = cycles_per_second * 60
+  pairs_count: number;       // compat: usamos "cycles"
+  cycles: number;            // soma dos dois atuadores
+  cycles_per_second: number; // CPM = *60
 };
 
 export type VibrationLiveItem = {
@@ -83,14 +89,13 @@ export type VibrationLiveItem = {
   rms_az: number;
   overall: number;
 };
-
 export type VibrationLiveResp = { items: VibrationLiveItem[] };
 
 export type ActuatorTimingsResp = {
   actuators: {
     actuator_id: number;
     last: {
-      ts_utc: string | null;   // ISO
+      ts_utc: string | null;
       dt_abre_s: number | null;
       dt_fecha_s: number | null;
       dt_ciclo_s: number | null;
@@ -108,21 +113,21 @@ export type SystemStatusResp = {
 
 export type HealthResp = {
   status: "ok" | "degraded" | "offline";
-  started_at?: string; // ISO UTC (para o Runtime)
+  started_at?: string;
 };
 
 // ======================
 // Dashboard (Live / etc.)
 // ======================
 
-// Estados dos atuadores (live) — consulta curta e frequente
+// Estados dos atuadores (live) — agora via endpoint dedicado p/ Monitoring
 export async function getActuatorsState(): Promise<LatchedResp> {
   const bust = Date.now();
-  return fetchJson<LatchedResp>(`/api/live/actuators/state?since_ms=8000&_=${bust}`);
+  return fetchJson<LatchedResp>(`/api/live/actuators/state-mon?_=${bust}`);
 }
 export const getLatchedActuators = getActuatorsState;
 
-// Ciclos totais — ~1s
+// Ciclos totais
 export async function getCyclesTotal(): Promise<CyclesTotalResp> {
   return fetchJson<CyclesTotalResp>(`/api/live/cycles/total`);
 }
@@ -130,8 +135,18 @@ export async function getCyclesTotal(): Promise<CyclesTotalResp> {
 // ======================
 // Monitoring
 // ======================
+
+// Shim de compat: agrega /api/live/actuators/cpm no shape antigo
 export async function getCyclesRate60s(windowS: number = 60): Promise<CyclesRateResp> {
-  return fetchJson<CyclesRateResp>(`/api/live/cycles/rate?window_s=${windowS}`);
+  const r = await fetchJson<ActuatorsCpmResp>(`/api/live/actuators/cpm?window_s=${windowS}`);
+  const sumCycles = (r?.actuators ?? []).reduce((acc, a) => acc + (a.cycles || 0), 0);
+  const sumCpm = (r?.actuators ?? []).reduce((acc, a) => acc + (a.cpm || 0), 0);
+  return {
+    window_seconds: windowS,
+    pairs_count: sumCycles,           // compat: não há "pairs_count", usamos cycles
+    cycles: sumCycles,
+    cycles_per_second: sumCpm / 60.0, // CPM agregado / 60
+  };
 }
 
 export async function getVibrationLive(windowS: number = 2): Promise<VibrationLiveResp> {
@@ -146,7 +161,7 @@ export async function getActuatorTimings(): Promise<ActuatorTimingsResp> {
 // System status / Health
 // ======================
 export async function getSystemStatus(): Promise<SystemStatusResp> {
-  // backend não expõe /api/system/status; mantemos compat.
+  // não há /api/system/status no backend atual
   return {};
 }
 
@@ -157,14 +172,13 @@ export async function getHealth(): Promise<HealthResp> {
     try {
       return await fetchJson<HealthResp>(`/health`);
     } catch {
-      // fallback compatível com HealthResp
       return { status: "offline" };
     }
   }
 }
 
 // ======================
-// Analytics (compat com Analytics.tsx)
+// Analytics (compat)
 // ======================
 export type OPCHistoryRow = { ts: string; value: number | boolean };
 
@@ -180,15 +194,12 @@ export async function getOPCHistory(params: {
     since: params.since,
     ...(params.asc ? { asc: "1" } : {}),
   });
-
   try {
     const raw = await fetchJson<any>(`/opc/history?${qs.toString()}`);
-    const arr = Array.isArray(raw)
-      ? raw
-      : raw?.items || raw?.data || raw?.rows || raw?.history || raw?.results || raw?.records || [];
+    const arr = Array.isArray(raw) ? raw : raw?.items || [];
     return (arr as any[]).map((r) => ({
-      ts: String(r.ts ?? r.ts_utc ?? r.timestamp ?? r.time ?? r.created_at ?? r.date ?? new Date().toISOString()),
-      value: (r.value ?? r.value_bool ?? r.v ?? r.state ?? r.val ?? r.bool ?? r.number ?? 0) as any,
+      ts: String(r.ts_utc ?? r.ts ?? r.timestamp ?? new Date().toISOString()),
+      value: (r.value_bool ?? r.value ?? r.v ?? 0) as any,
     }));
   } catch {
     const name = params.facet === "S1" ? `Recuado_${params.actuatorId}S1` : `Avancado_${params.actuatorId}S2`;
@@ -213,16 +224,19 @@ export async function getOPCHistoryByName(
       return [];
     }
   }
-  const arr = Array.isArray(raw)
-    ? raw
-    : raw?.items || raw?.data || raw?.rows || raw?.history || raw?.results || raw?.records || [];
+  const arr = Array.isArray(raw) ? raw : raw?.items || [];
   return (arr as any[]).map((r) => ({
-    ts: String(r.ts ?? r.ts_utc ?? r.time ?? r.timestamp ?? new Date().toISOString()),
-    value: (r.value ?? r.value_bool ?? r.v ?? r.bool ?? r.state ?? 0) as any,
+    ts: String(r.ts_utc ?? r.ts ?? r.time ?? new Date().toISOString()),
+    value: (r.value_bool ?? r.value ?? r.v ?? 0) as any,
   }));
 }
 export const getOpcHistoryByName = getOPCHistoryByName;
+<<<<<<< HEAD
 // Agregação por minuto (se não houver endpoint, retorna vazio)
+=======
+
+// Agregação por minuto
+>>>>>>> d5daabb48b205a13226f6d0fd38953c032e7e139
 export type MinuteAgg = {
   minute: string;
   t_open_ms_avg: number | null;
@@ -273,36 +287,29 @@ export async function getLiveActuatorsState(): Promise<{
   system: { status: string };
   actuators: any[];
 }> {
-  // helper de normalização (id, ciclos, etc.)
   const normAct = (raw: any) => {
     if (!raw) return null;
     const id = Number(raw.id ?? raw.actuator_id);
     if (!Number.isFinite(id)) return null;
     return {
-      // campos “canônicos” esperados pelo app
       id,
       state: raw.state ?? null,
       pending: raw.pending ?? null,
       fault: raw.fault ?? null,
-      facets: raw.facets ?? undefined, // legado (se vier)
-      // números de ciclo (qualquer shape -> totalCycles/cycles)
+      facets: raw.facets ?? undefined,
       cycles: raw.cycles ?? raw.count ?? raw.total ?? undefined,
       totalCycles: raw.totalCycles ?? raw.total ?? raw.cycles ?? undefined,
-      // timestamps/aux
       ts: raw.ts ?? raw.ts_utc ?? undefined,
       started_at: raw.started_at ?? undefined,
       elapsed_ms: raw.elapsed_ms ?? undefined,
-      // mantemos quaisquer extras
       ...raw,
-      // mas garantimos que não exista conflict com actuator_id
       actuator_id: undefined,
     };
   };
 
   try {
-    const data = await fetchJson<any>("/api/live/actuators/state");
+    const data = await fetchJson<any>("/api/live/actuators/state-mon");
 
-    // status do sistema (se o endpoint não mandar, consultamos /api/health)
     let status = String(data?.system?.status ?? "").toLowerCase();
     if (!status) {
       try {
@@ -322,24 +329,14 @@ export async function getLiveActuatorsState(): Promise<{
       actuators,
     };
   } catch {
-    // fallback (mantém o app vivo mesmo sem a rota principal)
+    // fallback para o alias antigo
     try {
-      const raw = await getActuatorsState();
+      const raw = await fetchJson<any>("/api/live/actuators/state");
       const arr = Array.isArray(raw?.actuators) ? raw.actuators : [];
-      const actuators = arr
-        .map((a: any) => ({
-          id: Number(a.id ?? a.actuator_id),
-          state: a.state ?? null,
-          facets: a.facets ?? undefined,
-          cycles: a.cycles ?? undefined,
-          totalCycles: a.totalCycles ?? undefined,
-          ...a,
-        }))
-        .filter((x: any) => Number.isFinite(x.id));
-
+      const actuators = arr.map(normAct).filter(Boolean);
       const h = await getHealth().catch(() => ({ status: "offline" } as any));
       return {
-        ts: new Date().toISOString(),
+        ts: String(raw?.ts ?? new Date().toISOString()),
         system: { status: String((h as any)?.status ?? "unknown") },
         actuators,
       };
@@ -364,22 +361,14 @@ export async function getMpuIds(): Promise<Array<string | number>> {
   }
 }
 
-// ---- MPU: último valor (via history limit=1) ----
+// ---- MPU: último valor ----
 export type MpuLatestCompat = {
   ts_utc: string;
   id: string | number;
-  ax: number;
-  ay: number;
-  az: number;
-  gx?: number;
-  gy?: number;
-  gz?: number;
-  ax_g?: number | null;
-  ay_g?: number | null;
-  az_g?: number | null;
-  gx_dps?: number | null;
-  gy_dps?: number | null;
-  gz_dps?: number | null;
+  ax: number; ay: number; az: number;
+  gx?: number; gy?: number; gz?: number;
+  ax_g?: number | null; ay_g?: number | null; az_g?: number | null;
+  gx_dps?: number | null; gy_dps?: number | null; gz_dps?: number | null;
   temp_c?: number | null;
 };
 
@@ -397,9 +386,7 @@ export async function getLatestMPU(id: number | "MPUA1" | "MPUA2" | string): Pro
     }
   }
 
-  const items: any[] =
-    Array.isArray(raw?.items) ? raw.items : Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : [];
-
+  const items: any[] = Array.isArray(raw?.items) ? raw.items : Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : [];
   if (!items.length) return null;
   const r = items[0];
 
@@ -412,35 +399,16 @@ export async function getLatestMPU(id: number | "MPUA1" | "MPUA2" | string): Pro
   const gz = Number(r.gz ?? r.gz_dps ?? 0);
 
   return {
-    ts_utc: ts,
-    id: r.id ?? id,
-    ax,
-    ay,
-    az,
-    gx,
-    gy,
-    gz,
-    ax_g: r.ax_g ?? ax,
-    ay_g: r.ay_g ?? ay,
-    az_g: r.az_g ?? az,
-    gx_dps: r.gx_dps ?? gx,
-    gy_dps: r.gy_dps ?? gy,
-    gz_dps: r.gz_dps ?? gz,
+    ts_utc: ts, id: r.id ?? id,
+    ax, ay, az, gx, gy, gz,
+    ax_g: r.ax_g ?? ax, ay_g: r.ay_g ?? ay, az_g: r.az_g ?? az,
+    gx_dps: r.gx_dps ?? gx, gy_dps: r.gy_dps ?? gy, gz_dps: r.gz_dps ?? gz,
     temp_c: r.temp_c ?? null,
   };
 }
-export const getMpuLatest = getLatestMPU; // alias
+export const getMpuLatest = getLatestMPU;
 
-// ==== MPU: histórico (hooks/telas antigas) ====
-export type MpuHistoryRow = {
-  ts: string;
-  ax: number;
-  ay: number;
-  az: number;
-  gx?: number;
-  gy?: number;
-  gz?: number;
-};
+export type MpuHistoryRow = { ts: string; ax: number; ay: number; az: number; gx?: number; gy?: number; gz?: number };
 
 export async function getMPUHistory(
   id: number | "MPUA1" | "MPUA2" | string,
@@ -462,9 +430,7 @@ export async function getMPUHistory(
     }
   }
 
-  const items: any[] =
-    Array.isArray(raw?.items) ? raw.items : Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : [];
-
+  const items: any[] = Array.isArray(raw?.items) ? raw.items : Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : [];
   return items.map((r) => ({
     ts: String(r.ts_utc ?? r.ts ?? r.timestamp ?? r.time ?? new Date().toISOString()),
     ax: Number(r.ax ?? r.ax_g ?? r.x ?? 0),
@@ -477,18 +443,9 @@ export async function getMPUHistory(
 }
 export const getMpuHistory = getMPUHistory;
 
-// --- Tipos comuns para MPU "latest" robusto ---
-export type MpuSample = {
-  ts: string; // ISO
-  ax?: number;
-  ay?: number;
-  az?: number;
-  gx?: number;
-  gy?: number;
-  gz?: number;
-};
+// --- Utilitários p/ “última amostra” MPU robusta ---
+export type MpuSample = { ts: string; ax?: number; ay?: number; az?: number; gx?: number; gy?: number; gz?: number };
 
-// Normalização de payload (qualquer shape -> MpuSample)
 function normalizeMpuSample(raw: any): MpuSample | null {
   if (!raw) return null;
   const ts = String(raw.ts_utc ?? raw.ts ?? raw.timestamp ?? raw.time ?? new Date().toISOString());
@@ -508,20 +465,13 @@ function normalizeMpuSample(raw: any): MpuSample | null {
     gz: gz != null ? Number(gz) : undefined,
   };
 }
-
-// Extrai 1 amostra de {items}/{data}/array/objeto (preferindo o mais recente)
 function pickOneMpuSample(payload: any): any {
   if (!payload) return null;
   const p = (payload as any).items ?? (payload as any).data ?? payload;
-  if (Array.isArray(p)) return p[0] ?? null; // maioria já retorna DESC
+  if (Array.isArray(p)) return p[0] ?? null;
   return p;
 }
 
-/**
- * Última amostra do MPU (A1/A2) sem ruído de log.
- * Tenta só rotas "history" por query, sem since/asc/limit (evita 422).
- * Ordem: /mpu/history?name=MPUAx → /mpu/history?id=MPUAx → /api/mpu/history?name=… → /api/mpu/history?id=…
- */
 export async function getMpuLatestSafe(nameOrId: string): Promise<MpuSample | null> {
   const s = String(nameOrId).trim();
   const m = /^MPUA?(\d+)$/i.exec(s);
@@ -544,16 +494,11 @@ export async function getMpuLatestSafe(nameOrId: string): Promise<MpuSample | nu
       const norm = normalizeMpuSample(one);
       if (norm && (norm.ax != null || norm.ay != null || norm.az != null)) return norm;
     } catch {
-      // ignora e tenta a próxima
+      // tenta próxima
     }
   }
   return null;
 }
-
-/**
- * Compat: última amostra por mpu_id numérico (1,2,…).
- * Converte para "MPUA{n}" e delega para getMpuLatestSafe.
- */
 export async function getMpuLatestById(mpu_id: number): Promise<MpuSample | null> {
   return getMpuLatestSafe(`MPUA${String(mpu_id)}`);
 }
@@ -578,4 +523,28 @@ export type AlertItem = {
 
 export async function getAlerts(limit = 5): Promise<{ items: AlertItem[]; count: number }> {
   return fetchJson<{ items: AlertItem[]; count: number }>(`/alerts?limit=${limit}`);
+}
+
+// lib/api.ts — helper dedicado p/ DASHBOARD (fast path)
+export async function getActuatorsStateFast(): Promise<{
+  ts: string;
+  actuators: { actuator_id: 1|2; state: "RECUADO"|"AVANÇADO"; pending: "AV"|"REC"|null; fault: string; elapsed_ms: number; started_at: string|null }[];
+}> {
+  const bust = Date.now();
+  return fetchJson(`/api/live/actuators/state?_=${bust}`);
+}
+// lib/api.ts
+export async function fetchJsonAbortable<T = any>(path: string, signal: AbortSignal): Promise<T> {
+  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
+  const res = await fetch(url, { cache: "no-store", signal });
+  if (!res.ok) throw new Error(`API ${res.status} ${res.statusText} on ${url}`);
+  return (await res.json()) as T;
+}
+
+export async function getActuatorsStateFastAbortable(signal: AbortSignal) {
+  const bust = Date.now();
+  // use a rota que está OK aí (uma destas duas):
+  // return fetchJsonAbortable(`/api/live/actuators/state?_=${bust}`, signal);
+  return fetchJsonAbortable(`/api/live/actuators/state2?_=${bust}`, signal);
+  // ou: return fetchJsonAbortable(`/live/actuators/state?_=${bust}`, signal);
 }

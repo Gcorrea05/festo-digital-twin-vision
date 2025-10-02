@@ -1,18 +1,11 @@
-// src/components/monitoring/SystemStatusPanel.tsx
 import React, { useMemo } from "react";
 import { useLive } from "@/context/LiveContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { CheckCircle2, AlertTriangle, XCircle, HelpCircle } from "lucide-react";
+import { CheckCircle2, XCircle, HelpCircle } from "lucide-react";
 
-type Sev = "operational" | "warning" | "down" | "unknown";
+type Sev = "operational" | "down" | "unknown";
 
-const SEV_ORDER: Record<Sev, number> = {
-  operational: 0,
-  warning: 1,
-  down: 2,
-  unknown: 3,
-};
-
+// ===== UI helpers =====
 function pill(sev: Sev) {
   const base =
     "inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium";
@@ -21,19 +14,13 @@ function pill(sev: Sev) {
       return {
         cls: `${base} bg-emerald-900/30 text-emerald-300 ring-1 ring-emerald-500/30`,
         icon: <CheckCircle2 className="h-4 w-4" />,
-        label: "Operational",
-      };
-    case "warning":
-      return {
-        cls: `${base} bg-amber-900/30 text-amber-300 ring-1 ring-amber-500/30`,
-        icon: <AlertTriangle className="h-4 w-4" />,
-        label: "Warning",
+        label: "Online",
       };
     case "down":
       return {
         cls: `${base} bg-red-900/30 text-red-300 ring-1 ring-red-500/30`,
         icon: <XCircle className="h-4 w-4" />,
-        label: "Down",
+        label: "Offline",
       };
     default:
       return {
@@ -44,56 +31,44 @@ function pill(sev: Sev) {
   }
 }
 
-function normalizeSev(v: unknown): Sev {
-  if (typeof v === "boolean") return v ? "operational" : "down";
-  if (typeof v === "number") {
-    if (v <= 0) return "down";
-    if (v === 1) return "operational";
-    return "warning";
-  }
-  const s = String(v ?? "").trim().toLowerCase();
-  if (!s) return "unknown";
-  if (["operational", "ok", "up", "online", "running"].includes(s)) return "operational";
-  if (["warning", "warn", "degraded", "maintenance", "partial"].includes(s)) return "warning";
-  if (["down", "offline", "error", "critical", "stopped", "desligado"].includes(s)) return "down";
-  return "unknown";
+// ===== Freshness =====
+const FRESH_MS = 5000; // 5s para considerar "online"
+
+function isFresh(ts?: string | number, now = Date.now(), freshMs = FRESH_MS) {
+  if (!ts) return false;
+  const t = typeof ts === "string" ? Date.parse(ts) : ts;
+  return Number.isFinite(t) && now - t <= freshMs;
 }
 
 export default function SystemStatusPanel() {
   const { snapshot } = useLive();
+  const now = Date.now();
 
-  // overall básico (ok/degraded/down/unknown) — útil como fallback
-  const overallFromStatus = useMemo<Sev>(() => {
+  // Overall simples (respeita seu "ok/down/unknown")
+  const overall = useMemo<Sev>(() => {
     const s = String(snapshot?.system.status ?? "unknown").toLowerCase();
     if (s === "ok") return "operational";
-    if (s === "degraded") return "warning";
     if (s === "down" || s === "offline") return "down";
     return "unknown";
   }, [snapshot?.system.status]);
 
-  // componentes vindos do backend via LiveContext (se ausentes, ficam unknown)
-  const components = useMemo(() => {
-    const c = snapshot?.system.components ?? {};
-    return {
-      actuators: normalizeSev((c as any).actuators),
-      sensors: normalizeSev((c as any).sensors),
-      transmission: normalizeSev((c as any).transmission),
-      control: normalizeSev((c as any).control),
-    } as const;
-  }, [snapshot?.system.components]);
+  // Sensors: se houver MPU recente
+  const sensorsSev: Sev = useMemo(() => {
+    const ts = snapshot?.mpu?.ts;
+    if (ts == null) return "down";
+    return isFresh(ts, now) ? "operational" : "down";
+  }, [snapshot?.mpu?.ts, now]);
 
-  // overall real = pior severidade entre os componentes; se não houver, usa overallFromStatus
-  const overall: Sev = useMemo(() => {
-    const arr = Object.values(components);
-    const hasAny =
-      arr.some((v) => v !== "unknown") ||
-      Object.keys(snapshot?.system.components ?? {}).length > 0;
-    if (!hasAny) return overallFromStatus;
-    return arr.reduce<Sev>(
-      (acc, cur) => (SEV_ORDER[cur] > SEV_ORDER[acc] ? cur : acc),
-      "operational"
-    );
-  }, [components, overallFromStatus, snapshot?.system.components]);
+  // Actuators: se qualquer atuador tiver ts recente
+  const actuatorsSev: Sev = useMemo(() => {
+    const arr = snapshot?.actuators ?? [];
+    if (!arr.length) return "down";
+    const anyFresh = arr.some((a) => isFresh(a?.ts, now));
+    return anyFresh ? "operational" : "down";
+  }, [snapshot?.actuators, now]);
+
+  // Transmission: mesma régua dos atuadores
+  const transmissionSev: Sev = actuatorsSev;
 
   const Row = ({ label, sev }: { label: string; sev: Sev }) => {
     const p = pill(sev);
@@ -109,13 +84,6 @@ export default function SystemStatusPanel() {
   };
 
   const overallPill = pill(overall);
-
-  const ROWS: Array<{ label: string; sev: Sev }> = [
-    { label: "Actuators", sev: components.actuators },
-    { label: "Sensors", sev: components.sensors },
-    { label: "Transmission", sev: components.transmission },
-    { label: "Control", sev: components.control }, // renomeado pra ficar consistente
-  ];
 
   return (
     <Card>
@@ -141,9 +109,10 @@ export default function SystemStatusPanel() {
             Components:
           </div>
           <div className="space-y-3">
-            {ROWS.map((r) => (
-              <Row key={r.label} label={r.label} sev={r.sev} />
-            ))}
+            <Row label="Actuators" sev={actuatorsSev} />
+            <Row label="Sensors" sev={sensorsSev} />
+            <Row label="Transmission" sev={transmissionSev} />
+            {/* Control removido */}
           </div>
         </div>
       </CardContent>
