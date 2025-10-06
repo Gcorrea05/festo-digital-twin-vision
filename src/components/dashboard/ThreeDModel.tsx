@@ -31,9 +31,9 @@ const signalName = {
 // Resolve caminho do GLB respeitando BASE_URL
 function getModelUrl(which: 1 | 2) {
   try {
-    return new URL(`/A${which}ANIMADO.glb`, import.meta.env.BASE_URL).pathname;
+    return new URL(`/A${which}FINALIZADO.glb`, import.meta.env.BASE_URL).pathname;
   } catch {
-    return `/A${which}ANIMADO.glb`;
+    return `/A${which}FINALIZADO .glb`;
   }
 }
 
