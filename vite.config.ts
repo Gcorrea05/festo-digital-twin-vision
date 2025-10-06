@@ -31,7 +31,6 @@ function mkProxy(ws: boolean): ProxyOptions {
     secure: false,
     timeout: 60_000,
     proxyTimeout: 60_000,
-    // hooks do http-proxy; ok no Vite
     configure: (proxy) => {
       proxy.on("error", (err: any) => {
         const code = err?.code || "";
@@ -40,7 +39,6 @@ function mkProxy(ws: boolean): ProxyOptions {
         }
       });
       proxy.on("proxyReq", (_proxyReq: any, req: any) => {
-        // debug leve — comente se poluir
         // console.log("[vite-proxy] →", req.method, req.path || req.url);
       });
     },
@@ -61,10 +59,16 @@ export default defineConfig({
     port: 8080,
     strictPort: true,
     proxy: {
-      "/api": mkProxy(true),   // deixe true se tiver WS sob /api
+      "/api": mkProxy(true),     // WS se existir sob /api
       "/opc": mkProxy(false),
       "/mpu": mkProxy(false),
-      "/ws":  mkProxy(true),
+      "/ws": mkProxy(true),
+
+      // 🔽 Novo: aceita chamadas do front em /simulation/* e reescreve para /api/simulation/*
+      "/simulation": {
+        ...mkProxy(false),
+        rewrite: (path) => path.replace(/^\/simulation/, "/api/simulation"),
+      },
     },
   },
 
@@ -75,7 +79,11 @@ export default defineConfig({
       "/api": mkProxy(true),
       "/opc": mkProxy(false),
       "/mpu": mkProxy(false),
-      "/ws":  mkProxy(true),
+      "/ws": mkProxy(true),
+      "/simulation": {
+        ...mkProxy(false),
+        rewrite: (path) => path.replace(/^\/simulation/, "/api/simulation"),
+      },
     },
   },
 });

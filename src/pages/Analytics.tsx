@@ -1,10 +1,10 @@
-// Analytics.tsx — bloco 1/3
+// src/pages/Analytics.tsx (1/3)
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  BarChart, Bar,
+  BarChart, Bar, ResponsiveContainer,
 } from "recharts";
 import { ChartContainer, ChartTooltipContent } from "@/components/ui/chart";
 import { useMpuIds, useMpuHistory } from "@/hooks/useMpu";
@@ -23,7 +23,11 @@ function toArray<T = any>(x: any): T[] {
 const toMinuteKey = (d: Date) =>
   d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
 
-// Paleta consistente
+const toMinuteIsoUTC = (d: Date) =>
+  new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(),
+    d.getUTCHours(), d.getUTCMinutes(), 0, 0)).toISOString();
+
+// Paleta
 const C = {
   A1: "#7C3AED",
   A2: "#06B6D4",
@@ -105,7 +109,7 @@ const Analytics: React.FC = () => {
     });
   };
 
-  // série principal (atuador selecionado) – ainda usada em "comparação"
+  // série principal (atuador selecionado)
   const actMpuRef = useRef<MpuPoint[]>([]);
   const [mpuChartData, setMpuChartData] = useState<MpuPoint[]>([]);
   useEffect(() => {
@@ -123,7 +127,7 @@ const Analytics: React.FC = () => {
   useEffect(() => setMpuA1Data(parseMpu(rowsA1 as any)), [rowsA1]);
   useEffect(() => setMpuA2Data(parseMpu(rowsA2 as any)), [rowsA2]);
 
-  // ===== Produção (CPM 60m via histórico S2) — ainda usado no comparativo =====
+  // ===== Produção (CPM 60m via histórico S2) — comparativo =====
   const [cpmSeries, setCpmSeries] = useState<CpmPoint[]>([]);
   const loadCpm60 = useCallback(async () => {
     const now = Date.now();
@@ -150,8 +154,8 @@ const Analytics: React.FC = () => {
     setCpmSeries(keys.map((k) => ({ t: k, ...(buckets.get(k) ?? { A1: 0, A2: 0 }) })));
   }, []);
   useEffect(() => { loadCpm60(); const id = setInterval(loadCpm60, POLL_MS); return () => clearInterval(id); }, [loadCpm60]);
-// Analytics.tsx — bloco 2/3
-  // ===== Métricas agregadas por minuto (Tempos/Runtime/CPM) – polling geral =====
+
+  // ===== Métricas agregadas por minuto =====
   const [aggA1, setAggA1] = useState<MinuteAgg[]>([]);
   const [aggA2, setAggA2] = useState<MinuteAgg[]>([]);
   const loadAgg = useCallback(async () => {
@@ -164,7 +168,7 @@ const Analytics: React.FC = () => {
   }, []);
   useEffect(() => { loadAgg(); const id = setInterval(loadAgg, POLL_MS); return () => clearInterval(id); }, [loadAgg]);
 
-  // ===== NOVO: polling 60s para CPM×Runtime =====
+  // ===== CPM×Runtime polling =====
   useEffect(() => {
     let timer: number | null = null;
     const fetchCpmRt = async () => {
@@ -176,8 +180,8 @@ const Analytics: React.FC = () => {
     timer = window.setInterval(fetchCpmRt, CPM_RT_POLL_MS);
     return () => { if (timer) window.clearInterval(timer); };
   }, [act]);
-
-  // ===== Métricas agregadas por minuto apenas p/ VIBRAÇÃO – requisito 60s =====
+// src/pages/Analytics.tsx (2/3)
+  // ===== Vibração (minute-agg 60s para scatter X=runtime, Y=vib média) =====
   const [vibAggAct, setVibAggAct] = useState<MinuteAgg[]>([]);
   useEffect(() => {
     let timer: number | null = null;
@@ -194,16 +198,36 @@ const Analytics: React.FC = () => {
   const dataAgg = act === 1 ? aggA1 : aggA2;
   const colorAct = act === 1 ? C.A1 : C.A2;
 
-  // ===== Fallback no cliente: média/min a partir do histórico bruto (p/ vibração) =====
+  // ===== Fallback: CPM×Runtime quando endpoint não traz nada =====
+  const cpmRtMerged = useMemo(() => {
+    if (cpmRtData?.length)
+      return cpmRtData.map(r => ({ minute: r.minute, cpm: r.cpm ?? 0, runtime: r.runtime_s ?? 0 }));
+
+    const map = new Map<string, { cpm: number; runtime: number }>();
+    for (const r of dataAgg) {
+      map.set(r.minute, { cpm: typeof r.cpm === "number" ? r.cpm : 0, runtime: r.runtime_s ?? 0 });
+    }
+
+    if (map.size === 0 && dataAgg.length === 0) {
+      const now = new Date();
+      for (let i = 119; i >= 0; i--) {
+        const d = new Date(now.getTime() - i * 60000);
+        map.set(toMinuteIsoUTC(d), { cpm: 0, runtime: 0 });
+      }
+    }
+    const out = Array.from(map.entries()).map(([minute, v]) => ({ minute, cpm: v.cpm, runtime: v.runtime }));
+    out.sort((a, b) => a.minute.localeCompare(b.minute));
+    return out;
+  }, [cpmRtData, dataAgg]);
+
+  // ===== Fallback vibração do histórico bruto =====
   const vibClientFallback = useMemo(() => {
     const src = mpuChartData;
     if (!src?.length) return [];
     const byMin = new Map<string, { sum: number; n: number }>();
     for (const p of src) {
       const t = new Date(p.ts);
-      const minuteIso = new Date(Date.UTC(
-        t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate(), t.getUTCHours(), t.getUTCMinutes(), 0, 0
-      )).toISOString();
+      const minuteIso = toMinuteIsoUTC(t);
       const ax = Number(p.ax ?? 0), ay = Number(p.ay ?? 0), az = Number(p.az ?? 0);
       const mag = Math.sqrt(ax*ax + ay*ay + az*az);
       const acc = byMin.get(minuteIso) ?? { sum: 0, n: 0 };
@@ -286,47 +310,73 @@ const Analytics: React.FC = () => {
                 {(() => {
                   const chartEl =
                     optProd === "cpm_runtime" ? (
-                      <BarChart
-                        data={cpmRtData.map((r) => ({
-                          minute: r.minute,
-                          cpm: r.cpm ?? 0,
-                          runtime: r.runtime_s ?? 0,
-                        }))}
-                      >
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="minute" />
-                        <YAxis yAxisId="left" />
-                        <YAxis yAxisId="right" orientation="right" />
-                        <Tooltip content={<ChartTooltipContent />} />
-                        <Legend />
-                        <Bar yAxisId="left" dataKey="cpm" name="CPM" fill={colorAct} />
-                        <Line yAxisId="right" type="monotone" dataKey="runtime" name="Runtime (s)" stroke={act === 1 ? C.RUNTIME_A1 : C.RUNTIME_A2} dot={false} />
-                      </BarChart>
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={cpmRtMerged.map((r) => ({
+                            minute: r.minute,
+                            cpm: r.cpm ?? 0,
+                            runtime: r.runtime ?? 0,
+                          }))}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis
+                            dataKey="minute"
+                            tickFormatter={(iso) =>
+                              new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                            }
+                          />
+                          <YAxis yAxisId="left" />
+                          <YAxis yAxisId="right" orientation="right" />
+                          <Tooltip
+                            content={<ChartTooltipContent />}
+                            labelFormatter={(iso) =>
+                              new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                            }
+                          />
+                          <Legend />
+                          <Bar yAxisId="left" dataKey="cpm" name="CPM" fill={colorAct} />
+                          <Line
+                            yAxisId="right"
+                            type="monotone"
+                            dataKey="runtime"
+                            name="Runtime (s)"
+                            stroke={act === 1 ? C.RUNTIME_A1 : C.RUNTIME_A2}
+                            dot={false}
+                          />
+                        </BarChart>
+                      </ResponsiveContainer>
                     ) : (
-                      <BarChart
-                        data={cpmSeries.map((r) => ({
-                          t: r.t,
-                          A1: r.A1,
-                          A2: r.A2,
-                          rtA1: aggA1.find((x) => x.minute.endsWith(r.t))?.runtime_s ?? null,
-                          rtA2: aggA2.find((x) => x.minute.endsWith(r.t))?.runtime_s ?? null,
-                        }))}
-                      >
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="t" />
-                        <YAxis yAxisId="left" />
-                        <YAxis yAxisId="right" orientation="right" />
-                        <Tooltip content={<ChartTooltipContent />} />
-                        <Legend />
-                        <Bar yAxisId="left" dataKey="A1" name="CPM A1" fill={C.A1} />
-                        <Bar yAxisId="left" dataKey="A2" name="CPM A2" fill={C.A2} />
-                        <Line yAxisId="right" type="monotone" dataKey="rtA1" name="Runtime A1 (s)" stroke={C.RUNTIME_A1} dot={false} />
-                        <Line yAxisId="right" type="monotone" dataKey="rtA2" name="Runtime A2 (s)" stroke={C.RUNTIME_A2} dot={false} />
-                      </BarChart>
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={cpmSeries.map((r) => ({
+                            t: r.t,
+                            A1: r.A1,
+                            A2: r.A2,
+                            rtA1: aggA1.find((x) => x.minute.endsWith(r.t))?.runtime_s ?? null,
+                            rtA2: aggA2.find((x) => x.minute.endsWith(r.t))?.runtime_s ?? null,
+                          }))}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="t" />
+                          <YAxis yAxisId="left" />
+                          <YAxis yAxisId="right" orientation="right" />
+                          <Tooltip content={<ChartTooltipContent />} />
+                          <Legend />
+                          <Bar yAxisId="left" dataKey="A1" name="CPM A1" fill={C.A1} />
+                          <Bar yAxisId="left" dataKey="A2" name="CPM A2" fill={C.A2} />
+                          <Line yAxisId="right" type="monotone" dataKey="rtA1" name="Runtime A1 (s)" stroke={C.RUNTIME_A1} dot={false} />
+                          <Line yAxisId="right" type="monotone" dataKey="rtA2" name="Runtime A2 (s)" stroke={C.RUNTIME_A2} dot={false} />
+                        </BarChart>
+                      </ResponsiveContainer>
                     );
 
                   return <ChartContainer config={{}}>{chartEl}</ChartContainer>;
                 })()}
+                {!cpmRtMerged.length && (
+                  <div className="w-full text-center text-xs opacity-70 mt-2">
+                    Sem dados de CPM/Runtime na janela selecionada (A{act}). Verifique minute-agg e OPC S2.
+                  </div>
+                )}
               </div>
             </TabsContent>
             {/* ===================== TEMPOS ===================== */}
@@ -359,10 +409,20 @@ const Analytics: React.FC = () => {
                       }))}
                     >
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="minute" />
+                      <XAxis
+                        dataKey="minute"
+                        tickFormatter={(iso) =>
+                          new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                        }
+                      />
                       <YAxis yAxisId="left" />
                       <YAxis yAxisId="right" orientation="right" />
-                      <Tooltip content={<ChartTooltipContent />} />
+                      <Tooltip
+                        content={<ChartTooltipContent />}
+                        labelFormatter={(iso) =>
+                          new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                        }
+                      />
                       <Legend />
                       {optTime === "t_abre" && <Line yAxisId="left" type="monotone" dataKey="to" name="TAbre (ms)" stroke={C.OPEN} dot={false} />}
                       {optTime === "t_fecha" && <Line yAxisId="left" type="monotone" dataKey="tf" name="TFecha (ms)" stroke={C.CLOSE} dot={false} />}
@@ -383,10 +443,20 @@ const Analytics: React.FC = () => {
                       })()}
                     >
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="minute" />
+                      <XAxis
+                        dataKey="minute"
+                        tickFormatter={(iso) =>
+                          new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                        }
+                      />
                       <YAxis yAxisId="left" />
                       <YAxis yAxisId="right" orientation="right" />
-                      <Tooltip content={<ChartTooltipContent />} />
+                      <Tooltip
+                        content={<ChartTooltipContent />}
+                        labelFormatter={(iso) =>
+                          new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                        }
+                      />
                       <Legend />
                       <Line yAxisId="left" type="monotone" dataKey="tcA1" name="TCiclo A1 (ms)" stroke={C.A1} dot={false} />
                       <Line yAxisId="left" type="monotone" dataKey="tcA2" name="TCiclo A2 (ms)" stroke={C.A2} dot={false} />
@@ -402,7 +472,11 @@ const Analytics: React.FC = () => {
             <TabsContent value="vibracao" className="pt-4">
               <div className="flex items-center gap-3 mb-3">
                 <span className="text-sm">Gráfico:</span>
-                <select className="border rounded-md px-2 py-1 bg-background" value={optVib} onChange={(e) => setOptVib(e.target.value as typeof optVib)}>
+                <select
+                  className="border rounded-md px-2 py-1 bg-background"
+                  value={optVib}
+                  onChange={(e) => setOptVib(e.target.value as typeof optVib)}
+                >
                   <option value="vibracao">Vibração (média/min × runtime)</option>
                   <option value="vib_compare">Comparativo A1 × A2 (ax)</option>
                 </select>
@@ -436,7 +510,7 @@ const Analytics: React.FC = () => {
                               name === "vib" ? [`${val.toFixed(3)}`, "Vibração (avg)"] : [`${val}s`, "Runtime"]
                             }
                             labelFormatter={(_, p: any) =>
-                              p?.[0]?.payload?.minute ? new Date(p[0].payload.minute).toLocaleTimeString() : ""
+                              p?.[0]?.payload?.minute ? new Date(p[0].payload.minute).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""
                             }
                           />
                           <Legend />
@@ -447,6 +521,7 @@ const Analytics: React.FC = () => {
                   ) : (
                     <LineChart
                       data={(() => {
+                        // Comparativo A1 x A2 (ax) EM LINHA + HH:MM
                         const m = new Map<string, { ts: string; axA1?: number; axA2?: number }>();
                         for (const p of mpuA1Data) m.set(p.ts, { ts: p.ts, axA1: p.ax });
                         for (const p of mpuA2Data) {
@@ -457,12 +532,22 @@ const Analytics: React.FC = () => {
                       })()}
                     >
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="ts" />
+                      <XAxis
+                        dataKey="ts"
+                        tickFormatter={(ts: string) =>
+                          new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
+                        }
+                      />
                       <YAxis />
-                      <Tooltip content={<ChartTooltipContent />} />
+                      <Tooltip
+                        content={<ChartTooltipContent />}
+                        labelFormatter={(ts: string) =>
+                          new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
+                        }
+                      />
                       <Legend />
-                      <Line type="monotone" dataKey="axA1" name="ax A1 (g)" stroke={C.A1} dot={false} />
-                      <Line type="monotone" dataKey="axA2" name="ax A2 (g)" stroke={C.A2} dot={false} />
+                      <Line type="monotone" dataKey="axA1" name="ax A1 (g)" stroke={C.A1} dot={false} strokeWidth={2} connectNulls />
+                      <Line type="monotone" dataKey="axA2" name="ax A2 (g)" stroke={C.A2} dot={false} strokeWidth={2} connectNulls />
                     </LineChart>
                   )}
                 </ChartContainer>

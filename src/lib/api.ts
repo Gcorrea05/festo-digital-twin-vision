@@ -1,4 +1,4 @@
-// src/lib/api.ts
+// src/lib/api.ts  (1/4)
 
 // ======================
 // Base e utilitário HTTP
@@ -120,15 +120,12 @@ export type HealthResp = {
 // ======================
 // Dashboard (Live / etc.)
 // ======================
-
-// Estados dos atuadores (live) — agora via endpoint dedicado p/ Monitoring
 export async function getActuatorsState(): Promise<LatchedResp> {
   const bust = Date.now();
   return fetchJson<LatchedResp>(`/api/live/actuators/state-mon?_=${bust}`);
 }
 export const getLatchedActuators = getActuatorsState;
 
-// Ciclos totais
 export async function getCyclesTotal(): Promise<CyclesTotalResp> {
   return fetchJson<CyclesTotalResp>(`/api/live/cycles/total`);
 }
@@ -136,8 +133,6 @@ export async function getCyclesTotal(): Promise<CyclesTotalResp> {
 // ======================
 // Monitoring
 // ======================
-
-// Shim de compat: agrega /api/live/actuators/cpm no shape antigo
 export async function getCyclesRate60s(windowS: number = 60): Promise<CyclesRateResp> {
   const r = await fetchJson<ActuatorsCpmResp>(`/api/live/actuators/cpm?window_s=${windowS}`);
   const sumCycles = (r?.actuators ?? []).reduce((acc, a) => acc + (a.cycles || 0), 0);
@@ -162,7 +157,6 @@ export async function getActuatorTimings(): Promise<ActuatorTimingsResp> {
 // System status / Health
 // ======================
 export async function getSystemStatus(): Promise<SystemStatusResp> {
-  // não há /api/system/status no backend atual
   return {};
 }
 
@@ -177,34 +171,73 @@ export async function getHealth(): Promise<HealthResp> {
     }
   }
 }
+// src/lib/api.ts  (2/4)
+
 // ======================
-// Analytics (compat)
+// Analytics (compat OPC)
 // ======================
-export type OPCHistoryRow = { ts: string; value: number | boolean };
+export type OPCHistoryRow = { ts: string; value: number | boolean | string | null | undefined };
+
+// Coerção robusta de boolean vindo do OPC
+function toBool01(v: any): 0 | 1 {
+  if (v === true || v === "true" || v === "True" || v === "TRUE") return 1;
+  if (v === false || v === "false" || v === "False" || v === "FALSE") return 0;
+  if (v === 1 || v === "1") return 1;
+  if (v === 0 || v === "0") return 0;
+  const n = Number(v);
+  if (Number.isFinite(n)) return n > 0 ? 1 : 0;
+  return 0;
+}
+
+// Tenta várias sintaxes de "since" até achar dados
+async function opcSinceVariants(actuatorId: number, facet: "S1" | "S2", since: string, asc = true) {
+  const variants = since.startsWith("-")
+    ? [since, "-120m", "-2h", "-7200s"] // tenta várias
+    : [since];
+
+  for (const s of variants) {
+    const qs = new URLSearchParams({
+      act: String(actuatorId),
+      facet,
+      since: s,
+      ...(asc ? { asc: "1" } : {}),
+    });
+    try {
+      const raw = await fetchJson<any>(`/opc/history?${qs.toString()}`);
+      const arr = (Array.isArray(raw) ? raw : raw?.items) ?? [];
+      if (arr.length) {
+        if (typeof window !== "undefined")
+          console.info(`[opcSinceVariants] facet=${facet} since=${s} -> ${arr.length} rows`);
+        return arr as any[];
+      }
+    } catch {
+      // tenta o próximo formato
+    }
+  }
+  if (typeof window !== "undefined")
+    console.warn(`[opcSinceVariants] facet=${facet} sem dados nas variantes: ${variants.join(", ")}`);
+  return [] as any[];
+}
 
 export async function getOPCHistory(params: {
   actuatorId: number;        // 1|2
-  facet: "S1" | "S2";        // S1=Recuado, S2=Avançado
-  since: string;             // "-60m", "-600s", ISO...
-  asc?: boolean;             // default: false
+  facet: "S1" | "S2";
+  since: string;
+  asc?: boolean;
 }): Promise<OPCHistoryRow[]> {
-  const qs = new URLSearchParams({
-    act: String(params.actuatorId),
-    facet: params.facet,
-    since: params.since,
-    ...(params.asc ? { asc: "1" } : {}),
-  });
   try {
-    const raw = await fetchJson<any>(`/opc/history?${qs.toString()}`);
-    const arr = Array.isArray(raw) ? raw : raw?.items || [];
-    return (arr as any[]).map((r) => ({
-      ts: String(r.ts_utc ?? r.ts ?? r.timestamp ?? new Date().toISOString()),
-      value: (r.value_bool ?? r.value ?? r.v ?? 0) as any,
-    }));
+    const arr = await opcSinceVariants(params.actuatorId, params.facet, params.since, !!params.asc);
+    if (arr.length) {
+      return (arr as any[]).map((r) => ({
+        ts: String(r.ts_utc ?? r.ts ?? r.timestamp ?? new Date().toISOString()),
+        value: r.value_bool ?? r.value ?? r.v ?? 0,
+      }));
+    }
   } catch {
-    const name = params.facet === "S1" ? `Recuado_${params.actuatorId}S1` : `Avancado_${params.actuatorId}S2`;
-    return getOPCHistoryByName(name, params.since, !!params.asc, 20000);
+    // cai no byName
   }
+  const name = params.facet === "S1" ? `Recuado_${params.actuatorId}S1` : `Avancado_${params.actuatorId}S2`;
+  return getOPCHistoryByName(name, params.since, !!params.asc, 20000);
 }
 
 export async function getOPCHistoryByName(
@@ -213,30 +246,31 @@ export async function getOPCHistoryByName(
   asc: boolean = true,
   limit: number = 20000
 ): Promise<OPCHistoryRow[]> {
-  const qs = new URLSearchParams({ name, since, limit: String(limit), ...(asc ? { asc: "1" } : {}) });
-  let raw: any;
-  try {
-    raw = await fetchJson<any>(`/opc/history?${qs.toString()}`);
-  } catch {
+  const variants = since.startsWith("-") ? [since, "-120m", "-2h", "-7200s"] : [since];
+  for (const s of variants) {
+    const qs = new URLSearchParams({ name, since: s, limit: String(limit), ...(asc ? { asc: "1" } : {}) });
     try {
-      raw = await fetchJson<any>(`/api/opc/history?${qs.toString()}`);
+      const raw = await fetchJson<any>(`/opc/history?${qs.toString()}`);
+      const arr = (Array.isArray(raw) ? raw : raw?.items) ?? [];
+      if (arr.length) {
+        if (typeof window !== "undefined")
+          console.info(`[getOPCHistoryByName] name=${name} since=${s} -> ${arr.length} rows`);
+        return (arr as any[]).map((r) => ({
+          ts: String(r.ts_utc ?? r.ts ?? r.time ?? new Date().toISOString()),
+          value: r.value_bool ?? r.value ?? r.v ?? 0,
+        }));
+      }
     } catch {
-      return [];
+      // tenta próxima
     }
   }
-  const arr = Array.isArray(raw) ? raw : raw?.items || [];
-  return (arr as any[]).map((r) => ({
-    ts: String(r.ts_utc ?? r.ts ?? r.time ?? new Date().toISOString()),
-    value: (r.value_bool ?? r.value ?? r.v ?? 0) as any,
-  }));
+  return [];
 }
 export const getOpcHistoryByName = getOPCHistoryByName;
 
-// Agregação por minuto (robusta a diferentes formatos)
 // ======================
-// Analytics – minute-agg e CPM×Runtime dedicado
+// Analytics – minute-agg (normalizador)
 // ======================
-
 export type MinuteAgg = {
   minute: string;
   t_open_ms_avg: number | null;
@@ -247,79 +281,183 @@ export type MinuteAgg = {
   vib_avg?: number | null;
 };
 
-export async function getMinuteAgg(act: "A1" | "A2", since: string): Promise<MinuteAgg[]> {
-  const qs = new URLSearchParams({ act, since });
+// normaliza uma linha com possíveis aliases vindos do backend
+function normalizeMinuteAggRow(r: any): MinuteAgg | null {
+  if (!r) return null;
+  const minute =
+    r.minute ?? r.ts ?? r.bucket_start ?? r.bucket ?? r.time ?? r.t ?? new Date().toISOString();
 
-  const tryParse = (payload: any): MinuteAgg[] => {
-    if (!payload) return [];
-    const arr =
-      (Array.isArray(payload) && payload) ||
-      payload?.data ||
-      payload?.items ||
-      payload?.rows ||
-      payload?.results ||
-      payload?.records ||
-      [];
-    return Array.isArray(arr) ? (arr as MinuteAgg[]) : [];
+  // tempos médios
+  const t_open_ms_avg  = r.t_open_ms_avg  ?? r.to_ms_avg ?? r.open_ms_avg  ?? null;
+  const t_close_ms_avg = r.t_close_ms_avg ?? r.tf_ms_avg ?? r.close_ms_avg ?? null;
+  const t_cycle_ms_avg = r.t_cycle_ms_avg ?? r.tc_ms_avg ?? r.cycle_ms_avg ?? null;
+
+  // runtime em segundos (clamp 0..60)
+  let runtime_s =
+    r.runtime_s ?? r.runtime ?? (typeof r.runtime_ms === "number" ? r.runtime_ms / 1000 : undefined) ?? 0;
+  runtime_s = Number(runtime_s);
+  if (!Number.isFinite(runtime_s)) runtime_s = 0;
+  runtime_s = Math.max(0, Math.min(60, runtime_s));
+
+  // cpm (ou equivalente)
+  let cpm =
+    r.cpm ?? r.cpm_avg ?? r.cpm_sum ?? r.cycles ??
+    (typeof r.cps === "number" ? r.cps * 60 : undefined) ??
+    r.value ?? 0;
+  cpm = Number(cpm);
+  if (!Number.isFinite(cpm) || cpm < 0) cpm = 0;
+
+  const vib_avg = r.vib_avg ?? r.vibration_avg ?? r.vib ?? null;
+
+  return {
+    minute: String(minute),
+    t_open_ms_avg: t_open_ms_avg != null ? Number(t_open_ms_avg) : null,
+    t_close_ms_avg: t_close_ms_avg != null ? Number(t_close_ms_avg) : null,
+    t_cycle_ms_avg: t_cycle_ms_avg != null ? Number(t_cycle_ms_avg) : null,
+    runtime_s,
+    cpm,
+    vib_avg: vib_avg != null ? Number(vib_avg) : null,
   };
+}
 
-  // caminho 1
-  try {
-    const r1 = await fetchJson<any>(`/metrics/minute-agg?${qs.toString()}`);
-    const a1 = tryParse(r1);
-    if (a1.length) return a1;
-  } catch {}
+const takeArray = (payload: any) =>
+  (Array.isArray(payload) && payload) ||
+  payload?.data || payload?.items || payload?.rows || payload?.results || payload?.records || [];
 
-  // caminho 2 (fallback com /api prefixado)
-  try {
-    const r2 = await fetchJson<any>(`/api/metrics/minute-agg?${qs.toString()}`);
-    const a2 = tryParse(r2);
-    if (a2.length) return a2;
-  } catch {}
-
+/** tenta algumas formas razoáveis de query aceitas por backends diferentes */
+async function tryMinuteAggMany(act: "A1" | "A2", since: string): Promise<MinuteAgg[]> {
+  const id = act === "A1" ? "1" : "2";
+  const combos: Array<Record<string, string>> = [
+    { act }, { act: id }, { id }, { actuator: id }, {},
+  ];
+  for (const a of combos) {
+    const qs = new URLSearchParams({ ...a, since }).toString();
+    const url = `/metrics/minute-agg?${qs}`;
+    try {
+      const raw = await fetchJson<any>(url);
+      const arr = takeArray(raw);
+      if (Array.isArray(arr) && arr.length) {
+        const out = arr.map(normalizeMinuteAggRow).filter(Boolean) as MinuteAgg[];
+        if (out.length) return out.sort((x, y) => x.minute.localeCompare(y.minute));
+      }
+    } catch {
+      // tenta próxima combinação
+    }
+  }
   return [];
 }
 
-// ---- Novo endpoint dedicado para o gráfico "CPM × Runtime" ----
+export async function getMinuteAgg(act: "A1" | "A2", since: string): Promise<MinuteAgg[]> {
+  return tryMinuteAggMany(act, since);
+}
+// src/lib/api.ts  (3/4)
+
+// ======================
+// CPM × Runtime (via OPC — garante dados)
+// ======================
 export type CpmRuntimeMinuteRow = {
-  minute: string;             // ISO do minuto
-  cpm: number | null;         // ciclos no minuto
-  runtime_s: number | null;   // segundos ativos no minuto (0..60)
+  minute: string;           // ISO do minuto
+  cpm: number | null;       // ciclos no minuto
+  runtime_s: number | null; // segundos ativos (0..60)
 };
 
+// Helpers de tempo/minuto
+type MinuteMapNum = Map<string, number>;
+
+const toMinuteIsoUTC = (d: Date) =>
+  new Date(Date.UTC(
+    d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(),
+    d.getUTCHours(), d.getUTCMinutes(), 0, 0
+  )).toISOString();
+
+const actLabelToId = (act: "A1" | "A2"): 1 | 2 => (act === "A1" ? 1 : 2);
+
+/** CPM por minuto via OPC (conta bordas 0->1 em S2) */
+async function cpmFromOpcByMinute(act: "A1" | "A2", since: string): Promise<MinuteMapNum> {
+  const id = actLabelToId(act);
+  const rows = await getOPCHistory({ actuatorId: id, facet: "S2", since, asc: true })
+    .catch(() => [] as OPCHistoryRow[]);
+  const map: MinuteMapNum = new Map();
+  for (let i = 1; i < rows.length; i++) {
+    const prev = toBool01((rows[i - 1] as any).value);
+    const curr = toBool01((rows[i] as any).value);
+    if (prev === 0 && curr === 1) {
+      const key = toMinuteIsoUTC(new Date(rows[i].ts));
+      map.set(key, (map.get(key) ?? 0) + 1);
+    }
+  }
+  return map;
+}
+
+/** Runtime em segundos por minuto via OPC (tempo com S2==1) */
+async function runtimeFromOpcByMinute(act: "A1" | "A2", since: string): Promise<MinuteMapNum> {
+  const id = actLabelToId(act);
+  const rows = await getOPCHistory({ actuatorId: id, facet: "S2", since, asc: true })
+    .catch(() => [] as OPCHistoryRow[]);
+  const out: MinuteMapNum = new Map();
+  if (!rows.length) return out;
+
+  // percorre segmentos em que o estado permanece constante
+  for (let i = 0; i < rows.length; i++) {
+    const v = toBool01((rows[i] as any).value);
+    if (!v) continue; // só contamos quando está "1"
+    const t0 = new Date(rows[i].ts).getTime();
+    const t1 = i + 1 < rows.length ? new Date(rows[i + 1].ts).getTime() : Date.now();
+
+    // fatiar por minuto para agregar corretamente
+    let t = t0;
+    while (t < t1) {
+      const d = new Date(t);
+      const key = toMinuteIsoUTC(d);
+      const endOfMinute = new Date(Date.UTC(
+        d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(),
+        d.getUTCHours(), d.getUTCMinutes(), 59, 999
+      )).getTime();
+      const chunkEnd = Math.min(endOfMinute + 1, t1);
+      const sec = Math.max(0, Math.min(60, (chunkEnd - t) / 1000));
+      out.set(key, Math.min(60, (out.get(key) ?? 0) + sec));
+      t = chunkEnd;
+    }
+  }
+  return out;
+}
+
+/** NOVA implementação robusta: usa minute-agg se houver; senão calcula pelo OPC. */
 export async function getCpmRuntimeMinute(
   act: "A1" | "A2",
-  since: string = "-2h"
+  since: string = "-120m" // usa um formato que sabemos que o backend aceita
 ): Promise<CpmRuntimeMinuteRow[]> {
-  const qs = new URLSearchParams({ act, since });
+  // 1) tenta minute-agg (se o backend fornecer)
+  const minuteAgg = await tryMinuteAggMany(act, since).catch(() => [] as MinuteAgg[]);
+  if (minuteAgg.length) {
+    const rows = minuteAgg.map(r => ({
+      minute: r.minute,
+      cpm: r.cpm ?? 0,
+      runtime_s: r.runtime_s ?? 0,
+    })).sort((a,b) => a.minute.localeCompare(b.minute));
+    if (typeof window !== "undefined")
+      console.info(`[getCpmRuntimeMinute][${act}] via minute-agg -> ${rows.length} pontos`);
+    return rows;
+  }
 
-  const tryParse = (payload: any): CpmRuntimeMinuteRow[] => {
-    const arr =
-      (Array.isArray(payload) && payload) ||
-      payload?.data ||
-      payload?.items ||
-      payload?.rows ||
-      payload?.results ||
-      payload?.records ||
-      [];
-    return Array.isArray(arr) ? (arr as CpmRuntimeMinuteRow[]) : [];
-  };
+  // 2) fallback 100% via OPC (com since variants já dentro do getOPCHistory)
+  const [cpmMap, rtMap] = await Promise.all([
+    cpmFromOpcByMinute(act, since),
+    runtimeFromOpcByMinute(act, since),
+  ]);
 
-  // caminho preferido (com prefixo /api)
-  try {
-    const r1 = await fetchJson<any>(`/api/metrics/cpm-runtime-minute?${qs.toString()}`);
-    const a1 = tryParse(r1);
-    if (a1.length) return a1;
-  } catch {}
+  const keys = new Set<string>([...cpmMap.keys(), ...rtMap.keys()]);
+  const rows: CpmRuntimeMinuteRow[] = [];
+  for (const k of keys) {
+    rows.push({ minute: k, cpm: cpmMap.get(k) ?? 0, runtime_s: rtMap.get(k) ?? 0 });
+  }
+  rows.sort((a, b) => a.minute.localeCompare(b.minute));
 
-  // fallback (sem prefixo /api)
-  try {
-    const r2 = await fetchJson<any>(`/metrics/cpm-runtime-minute?${qs.toString()}`);
-    const a2 = tryParse(r2);
-    if (a2.length) return a2;
-  } catch {}
-
-  return [];
+  if (typeof window !== "undefined") {
+    console.info(`[getCpmRuntimeMinute][${act}] via OPC -> ${rows.length} pontos`);
+    if (!rows.length) console.warn("[getCpmRuntimeMinute] Nenhum ponto: verifique se há transições S2 0→1 no período.");
+  }
+  return rows;
 }
 
 // ======================
@@ -372,7 +510,6 @@ export async function getLiveActuatorsState(): Promise<{
       actuators,
     };
   } catch {
-    // fallback para o alias antigo
     try {
       const raw = await fetchJson<any>("/api/live/actuators/state");
       const arr = Array.isArray(raw?.actuators) ? raw.actuators : [];
@@ -389,6 +526,8 @@ export async function getLiveActuatorsState(): Promise<{
     }
   }
 }
+// src/lib/api.ts  (4/4)
+
 // ---- MPU: ids disponíveis ----
 export async function getMpuIds(): Promise<Array<string | number>> {
   try {
@@ -568,7 +707,7 @@ export async function getAlerts(limit = 5): Promise<{ items: AlertItem[]; count:
   return fetchJson<{ items: AlertItem[]; count: number }>(`/alerts?limit=${limit}`);
 }
 
-// lib/api.ts — helper dedicado p/ DASHBOARD (fast path)
+// DASHBOARD (fast path)
 export async function getActuatorsStateFast(): Promise<{
   ts: string;
   actuators: { actuator_id: 1|2; state: "RECUADO"|"AVANÇADO"; pending: "AV"|"REC"|null; fault: string; elapsed_ms: number; started_at: string|null }[];
@@ -577,7 +716,6 @@ export async function getActuatorsStateFast(): Promise<{
   return fetchJson(`/api/live/actuators/state?_=${bust}`);
 }
 
-// lib/api.ts
 export async function fetchJsonAbortable<T = any>(path: string, signal: AbortSignal): Promise<T> {
   const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
   const res = await fetch(url, { cache: "no-store", signal });
@@ -587,8 +725,5 @@ export async function fetchJsonAbortable<T = any>(path: string, signal: AbortSig
 
 export async function getActuatorsStateFastAbortable(signal: AbortSignal) {
   const bust = Date.now();
-  // use a rota que está OK aí (ajuste se necessário)
   return fetchJsonAbortable(`/api/live/actuators/state2?_=${bust}`, signal);
-  // ou: return fetchJsonAbortable(`/api/live/actuators/state?_=${bust}`, signal);
-  // ou: return fetchJsonAbortable(`/live/actuators/state?_=${bust}`, signal);
 }
