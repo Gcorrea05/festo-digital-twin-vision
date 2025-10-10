@@ -1,24 +1,16 @@
 // src/components/monitoring/LiveMetricsMon.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useLive } from "@/context/LiveContext";
 import {
-  fetchJson,
-  getMpuLatestSafe,
-  getActuatorTimings,
-  type ActuatorTimingsResp,
+  openMonitoringWS,
+  openSlowWS,
+  type WSMessageMonitoring,
+  type WSMessageCPM,
+  type AnyWSMessage,
 } from "@/lib/api";
 
-const POLL_MS = 500;
-
 type Props = { selectedId: 1 | 2 };
-type MpuVec = { ax?: number; ay?: number; az?: number } | null;
-
-// shape do /api/live/actuators/cpm
-type ActuatorsCpmResp = {
-  ts: string;
-  actuators: { id: number; window_s: number; cycles: number; cpm: number }[];
-};
 
 const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
   const { snapshot } = useLive();
@@ -30,78 +22,81 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
     if (s === "degraded") return "DEGRADED";
     if (s === "down" || s === "offline") return "OFFLINE";
     return "—";
-  }, [snapshot]);
+    // patch: depende só do status, não do snapshot inteiro
+  }, [snapshot?.system?.status]);
 
-  // --- CPM (via backend /api/live/actuators/cpm) ---
-  const [cpmData, setCpmData] = useState<ActuatorsCpmResp | null>(null);
-  const cpm = useMemo<number | null>(() => {
-    const item = cpmData?.actuators?.find((a) => Number(a.id) === selectedId);
-    const v = item ? Number(item.cpm) : null;
-    return Number.isFinite(v as number) ? (v as number) : null;
-  }, [cpmData, selectedId]);
+  // --- Estados exibidos ---
+  const [cpm, setCpm] = useState<number | null>(null);
+  const [vibOverall, setVibOverall] = useState<number | null>(null);
+  const [tOpenMs, setTOpenMs] = useState<number | null>(null);
+  const [tCloseMs, setTCloseMs] = useState<number | null>(null);
+  const [tCycleMs, setTCycleMs] = useState<number | null>(null);
 
-  // --- VIBRAÇÃO (última amostra gravada no DB) ---
-  const mpuName = selectedId === 1 ? "MPUA1" : "MPUA2";
-  const [mpu, setMpu] = useState<MpuVec>(null);
-  const vibOverall = useMemo(() => {
-    if (!mpu) return null;
-    const ax = Number(mpu.ax ?? 0),
-      ay = Number(mpu.ay ?? 0),
-      az = Number(mpu.az ?? 0);
-    const v = Math.sqrt(ax * ax + ay * ay + az * az);
-    return Number.isFinite(v) ? v : null;
-  }, [mpu]);
+  // Guard para evitar setState após unmount
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
 
-  // --- TIMINGS (DTAbre/DTFecha/DTCiclo) vindos do backend ---
-  const [timings, setTimings] = useState<ActuatorTimingsResp["actuators"] | null>(null);
+  // Helper
   const secToMs = (val: number | null | undefined) =>
     val == null ? null : Number.isFinite(Number(val)) ? Math.round(Number(val) * 1000) : null;
 
-  const { tOpenMs, tCloseMs, tCycleMs } = useMemo(() => {
-    const act = timings?.find((a) => Number(a.actuator_id) === selectedId);
-    const openMs = secToMs(act?.last?.dt_abre_s);
-    const closeMs = secToMs(act?.last?.dt_fecha_s);
-    const cycleBackend = secToMs(act?.last?.dt_ciclo_s);
-    const cycleMs = cycleBackend ?? (openMs != null && closeMs != null ? openMs + closeMs : null);
-    return { tOpenMs: openMs, tCloseMs: closeMs, tCycleMs: cycleMs };
-  }, [timings, selectedId]);
-
-  // Poll (mpu latest + timings + cpm)
+  // --- Inscrição no /ws/monitoring (2 s): timings + vibração (overall) ---
   useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      try {
-        const [latest, t, c] = await Promise.allSettled([
-          getMpuLatestSafe(mpuName),
-          getActuatorTimings(),
-          fetchJson<ActuatorsCpmResp>(`/api/live/actuators/cpm?window_s=60`),
-        ]);
-        if (!alive) return;
+    const handleMonitoring = (msg: WSMessageMonitoring) => {
+      // timings
+      const act = (msg.timings || []).find((a) => Number(a.actuator_id) === selectedId);
+      const openMs = secToMs(act?.last?.dt_abre_s);
+      const closeMs = secToMs(act?.last?.dt_fecha_s);
+      const cycleBackend = secToMs(act?.last?.dt_ciclo_s);
+      const cycleMs = cycleBackend ?? (openMs != null && closeMs != null ? openMs + closeMs : null);
 
-        if (latest.status === "fulfilled" && latest.value) {
-          setMpu({ ax: latest.value.ax, ay: latest.value.ay, az: latest.value.az });
-        } else {
-          setMpu(null);
-        }
+      // vibração: overall por mpu_id (1 -> A1, 2 -> A2)
+      const targetMpu = selectedId === 1 ? 1 : 2;
+      const vibItem = (msg.vibration?.items || []).find((it) => Number(it.mpu_id) === targetMpu);
+      const overall = vibItem?.overall != null ? Number(vibItem.overall) : null;
 
-        if (t.status === "fulfilled" && Array.isArray(t.value?.actuators)) {
-          setTimings(t.value.actuactors as any ?? t.value.actuators);
-          setTimings(t.value.actuators);
-        } else {
-          setTimings(null);
-        }
-
-        if (c.status === "fulfilled") setCpmData(c.value);
-        else setCpmData(null);
-      } finally {
-        if (alive) setTimeout(tick, POLL_MS);
-      }
+      if (!aliveRef.current) return;
+      setTOpenMs(openMs);
+      setTCloseMs(closeMs);
+      setTCycleMs(cycleMs);
+      setVibOverall(Number.isFinite(overall as number) ? (overall as number) : null);
     };
-    tick();
+
+    const wsMon = openMonitoringWS({
+      onMessage: (m: AnyWSMessage) => {
+        if (m.type === "monitoring") handleMonitoring(m as WSMessageMonitoring);
+      },
+    });
+
     return () => {
-      alive = false;
+      wsMon.close();
     };
-  }, [mpuName]);
+  }, [selectedId]);
+
+  // --- Inscrição no /ws/slow (60 s): CPM por atuador ---
+  useEffect(() => {
+    const handleCpm = (msg: WSMessageCPM) => {
+      const item = (msg.items || []).find((a) => Number(a.id) === selectedId);
+      const v = item ? Number(item.cpm) : null;
+      if (!aliveRef.current) return;
+      setCpm(Number.isFinite(v as number) ? (v as number) : null);
+    };
+
+    const wsSlow = openSlowWS({
+      onMessage: (m: AnyWSMessage) => {
+        if (m.type === "cpm") handleCpm(m as WSMessageCPM);
+      },
+    });
+
+    return () => {
+      wsSlow.close();
+    };
+  }, [selectedId]);
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -178,4 +173,5 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
   );
 };
 
-export default LiveMetricsMon;
+// patch: evita renders desnecessários quando props/snapshot não mudam
+export default React.memo(LiveMetricsMon);

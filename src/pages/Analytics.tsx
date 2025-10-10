@@ -1,4 +1,4 @@
-// src/pages/Analytics.tsx (1/3)
+// src/pages/Analytics.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -180,7 +180,7 @@ const Analytics: React.FC = () => {
     timer = window.setInterval(fetchCpmRt, CPM_RT_POLL_MS);
     return () => { if (timer) window.clearInterval(timer); };
   }, [act]);
-// src/pages/Analytics.tsx (2/3)
+
   // ===== Vibração (minute-agg 60s para scatter X=runtime, Y=vib média) =====
   const [vibAggAct, setVibAggAct] = useState<MinuteAgg[]>([]);
   useEffect(() => {
@@ -379,6 +379,7 @@ const Analytics: React.FC = () => {
                 )}
               </div>
             </TabsContent>
+
             {/* ===================== TEMPOS ===================== */}
             <TabsContent value="tempos" className="pt-4">
               <div className="flex items-center gap-3 mb-3">

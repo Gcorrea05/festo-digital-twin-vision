@@ -1,3 +1,4 @@
+// src/components/monitoring/SystemStatusPanel.tsx
 import React, { useMemo } from "react";
 import { useLive } from "@/context/LiveContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -40,34 +41,28 @@ function isFresh(ts?: string | number, now = Date.now(), freshMs = FRESH_MS) {
   return Number.isFinite(t) && now - t <= freshMs;
 }
 
-export default function SystemStatusPanel() {
+const SystemStatusPanel: React.FC = () => {
   const { snapshot } = useLive();
   const now = Date.now();
 
-  // Overall simples (respeita seu "ok/down/unknown")
+  // Overall (mapeia "ok" | "degraded" | "offline" para UI)
   const overall = useMemo<Sev>(() => {
-    const s = String(snapshot?.system.status ?? "unknown").toLowerCase();
+    const s = String(snapshot?.system?.status ?? "unknown").toLowerCase();
     if (s === "ok") return "operational";
-    if (s === "down" || s === "offline") return "down";
+    if (s === "offline" || s === "down") return "down";
     return "unknown";
-  }, [snapshot?.system.status]);
-
-  // Sensors: se houver MPU recente
-  const sensorsSev: Sev = useMemo(() => {
-    const ts = snapshot?.mpu?.ts;
-    if (ts == null) return "down";
-    return isFresh(ts, now) ? "operational" : "down";
-  }, [snapshot?.mpu?.ts, now]);
+  }, [snapshot?.system?.status]);
 
   // Actuators: se qualquer atuador tiver ts recente
   const actuatorsSev: Sev = useMemo(() => {
     const arr = snapshot?.actuators ?? [];
     if (!arr.length) return "down";
-    const anyFresh = arr.some((a) => isFresh(a?.ts, now));
+    const anyFresh = arr.some((a) => isFresh(a.ts, now));
     return anyFresh ? "operational" : "down";
   }, [snapshot?.actuators, now]);
 
-  // Transmission: mesma régua dos atuadores
+  // Sensors/Transmission: espelham atividade dos atuadores (mesmo canal WS)
+  const sensorsSev: Sev = actuatorsSev;
   const transmissionSev: Sev = actuatorsSev;
 
   const Row = ({ label, sev }: { label: string; sev: Sev }) => {
@@ -118,4 +113,6 @@ export default function SystemStatusPanel() {
       </CardContent>
     </Card>
   );
-}
+};
+
+export default SystemStatusPanel;

@@ -1,8 +1,7 @@
-// src/hooks/useOpcStream.ts
 // Polling-only (sem WebSocket) – compatível com ProductionStats e ThreeDModel.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getOpcHistoryByName } from "@/lib/api";
+import { getOPCHistoryByName } from "@/lib/api";
 
 export type OpcEvent = {
   type: "opc_event";
@@ -70,11 +69,10 @@ export function useOpcStream(opts?: Options) {
 
     const tick = async () => {
       try {
-        const payload = await getOpcHistoryByName({
-          name,
-          since: "-10s",
-          asc: true,
-        }).catch(() => []);
+        // getOPCHistoryByName possui assinatura posicional
+        // (name: string, since = "-10m", asc = true, limit = 20000)
+        const payload = await getOPCHistoryByName(name, "-10s", true, 200)
+          .catch(() => []);
 
         const rows = rowsFromPayload(payload);
         if (rows.length) {

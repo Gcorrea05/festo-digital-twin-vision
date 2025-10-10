@@ -50,13 +50,16 @@ export function useMpuIds(pollMs = 30000) {
   useEffect(() => {
     let timer: number | null = null;
     let cancelled = false;
+    let first = true;
 
     const tick = async () => {
       try {
-        setLoading(true);
+        if (first) setLoading(true);
         const list = await apiGetMpuIds();
         if (!cancelled) {
-          const asStrings = Array.isArray(list) ? list.map((v) => String(v)) : [];
+          const asStrings = Array.isArray(list)
+            ? Array.from(new Set(list.map((v) => String(v)))).sort()
+            : [];
           setIds(asStrings);
           setError(null);
         }
@@ -64,7 +67,7 @@ export function useMpuIds(pollMs = 30000) {
         if (!cancelled) setError(e?.message ?? "Erro ao listar MPUs");
       } finally {
         if (!cancelled) {
-          setLoading(false);
+          if (first) { setLoading(false); first = false; }
           timer = window.setTimeout(tick, pollMs) as unknown as number;
         }
       }

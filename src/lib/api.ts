@@ -1,4 +1,4 @@
-// src/lib/api.ts  (1/4)
+// src/lib/api.ts — WS-first com fallback HTTP (compat total)
 
 // ======================
 // Base e utilitário HTTP
@@ -12,28 +12,66 @@ export function getApiBase() {
   return API_BASE;
 }
 
-export async function fetchJson<T = any>(path: string, init?: RequestInit): Promise<T> {
-  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
-  const res = await fetch(url, { cache: "no-store", ...init });
+// ---- timeouts e helpers
+function withTimeout(init: RequestInit = {}, timeoutMs = 8000): RequestInit {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), timeoutMs);
+  return { ...init, signal: ctrl.signal, ...({ __timeoutId: id } as any) };
+}
+async function finalize(res: Response, url: string, init: RequestInit) {
+  try {
+    if ((init as any).__timeoutId) clearTimeout((init as any).__timeoutId);
+  } catch {}
   if (!res.ok) throw new Error(`API ${res.status} ${res.statusText} on ${url}`);
+  return res;
+}
+
+export async function fetchJson<T = any>(
+  path: string,
+  init?: RequestInit & { timeoutMs?: number }
+): Promise<T> {
+  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
+  const i = withTimeout({ cache: "no-store", ...(init || {}) }, init?.timeoutMs ?? 8000);
+  const res = await fetch(url, i).then((r) => finalize(r, url, i));
   return (await res.json()) as T;
 }
 
-export async function postJson<T = any>(path: string, body: any, init?: RequestInit): Promise<T> {
+export async function postJson<T = any>(
+  path: string,
+  body: any,
+  init?: RequestInit & { timeoutMs?: number }
+): Promise<T> {
   const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-    cache: "no-store",
-    body: JSON.stringify(body ?? {}),
-    ...init,
-  });
-  if (!res.ok) throw new Error(`API ${res.status} ${res.statusText} on ${url}`);
+  const i = withTimeout(
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+      cache: "no-store",
+      body: JSON.stringify(body ?? {}),
+      ...(init || {}),
+    },
+    init?.timeoutMs ?? 8000
+  );
+  const res = await fetch(url, i).then((r) => finalize(r, url, i));
   return (await res.json()) as T;
 }
+
+// helper genérico que tenta múltiplas URLs/métodos
+async function fetchFirstOk<T>(candidates: Array<{ url: string; init?: RequestInit }>): Promise<T> {
+  let lastErr: any;
+  for (const c of candidates) {
+    try {
+      return await fetchJson<T>(c.url, c.init);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
 
 // ======================
-// Tipos
+// Tipos (existentes)
 // ======================
 export type StableState = "RECUADO" | "AVANÇADO" | "DESCONHECIDO";
 export type PendingTarget = "AV" | "REC" | null;
@@ -43,7 +81,7 @@ export type LatchedActuator = {
   actuator_id: 1 | 2;
   state: StableState;
   pending: PendingTarget;
-  fault: Fault;
+  fault: Fault | string;
   elapsed_ms: number;
   started_at: string | null; // ISO
 };
@@ -66,27 +104,25 @@ export type CyclesTotalResp = {
   ts: string; // ISO
 };
 
-// === Novo: shape nativo do /api/live/actuators/cpm ===
 export type ActuatorsCpmResp = {
   ts: string;
   actuators: { id: number; window_s: number; cycles: number; cpm: number }[];
 };
 
-// === Compat antigo (Monitoring) ===
 export type CyclesRateResp = {
   window_seconds: number;
-  pairs_count: number;       // compat: usamos "cycles"
-  cycles: number;            // soma dos dois atuadores
-  cycles_per_second: number; // CPM = *60
+  pairs_count: number;
+  cycles: number;
+  cycles_per_second: number;
 };
 
 export type VibrationLiveItem = {
   mpu_id: number;
-  ts_start: string; // ISO
-  ts_end: string;   // ISO
-  rms_ax: number;
-  rms_ay: number;
-  rms_az: number;
+  ts_start?: string;
+  ts_end?: string;
+  rms_ax?: number;
+  rms_ay?: number;
+  rms_az?: number;
   overall: number;
 };
 export type VibrationLiveResp = { items: VibrationLiveItem[] };
@@ -95,7 +131,7 @@ export type ActuatorTimingsResp = {
   actuators: {
     actuator_id: number;
     last: {
-      ts_utc: string | null;
+      ts_utc?: string | null;
       dt_abre_s: number | null;
       dt_fecha_s: number | null;
       dt_ciclo_s: number | null;
@@ -104,59 +140,176 @@ export type ActuatorTimingsResp = {
 };
 
 export type SystemStatusResp = {
-  components?: {
-    actuators?: string;
-    sensors?: string;
-    transmission?: string;
-    control?: string;
-  };
+  components?: { actuators?: string; sensors?: string; transmission?: string; control?: string };
 };
 
 export type HealthResp = {
-  status: "ok" | "degraded" | "offline";
+  status: "ok" | "degraded" | "offline" | string;
   started_at?: string;
 };
 
 // ======================
 // Dashboard (Live / etc.)
 // ======================
+
+// WS-first: preferimos o snapshot novo /api/live/snapshot
 export async function getActuatorsState(): Promise<LatchedResp> {
-  const bust = Date.now();
-  return fetchJson<LatchedResp>(`/api/live/actuators/state-mon?_=${bust}`);
+  try {
+    const snap = await fetchJson<any>("/api/live/snapshot");
+    const ts = String(snap?.ts ?? new Date().toISOString());
+    const items = Array.isArray(snap?.actuators) ? snap.actuators : [];
+    const actuators: LatchedActuator[] = items
+      .map((a: any) => ({
+        actuator_id: Number(a.id ?? a.actuator_id),
+        state: (a.state ?? "DESCONHECIDO") as StableState,
+        pending: (a.pending ?? null) as PendingTarget,
+        fault: (a.fault ?? "NONE") as any,
+        elapsed_ms: Number(a.elapsed_ms ?? 0),
+        started_at: a.started_at ?? null,
+      }))
+      .filter((x: any) => Number.isFinite(x.actuator_id));
+    return { ts, actuators };
+  } catch {
+    // Fallbacks legados (se existirem no ambiente)
+    const bust = Date.now();
+    try {
+      return await fetchJson<LatchedResp>(`/api/live/actuators/state-mon?_=${bust}`);
+    } catch {
+      return await fetchJson<LatchedResp>(`/api/live/actuators/state?_=${bust}`);
+    }
+  }
 }
 export const getLatchedActuators = getActuatorsState;
+
+// (opcional/legado) — agora adaptado ao snapshot
+export async function getActuatorsStateFast(): Promise<{
+  ts: string;
+  actuators: {
+    actuator_id: 1 | 2;
+    state: "RECUADO" | "AVANÇADO" | "DESCONHECIDO";
+    pending: "AV" | "REC" | null;
+    fault: string;
+    elapsed_ms: number;
+    started_at: string | null;
+  }[];
+}> {
+  const snap = await getActuatorsState();
+  return {
+    ts: snap.ts,
+    actuators: (snap.actuators || []) as any,
+  };
+}
+
+// ===== OPC: candidatos de rotas (by-name e by-facet) =====
+function opcCandidatesByName(qs: string, name: string, since: string, limit: number, asc: boolean) {
+  const body = JSON.stringify({ name, since, limit, asc });
+  return [
+    // GETs mais prováveis
+    { url: `/api/opc/history/name?${qs}` },
+    { url: `/opc/history/name?${qs}` },
+    { url: `/api/opc/by-name?${qs}` },
+    { url: `/opc/by-name?${qs}` },
+    { url: `/api/opc/query?${qs}` },
+    { url: `/opc/query?${qs}` },
+    { url: `/api/opc/history?${qs}` },
+    { url: `/opc/history?${qs}` },
+
+    // POSTs equivalentes
+    { url: `/api/opc/history/name`, init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
+    { url: `/opc/history/name`,     init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
+    { url: `/api/opc/by-name`,      init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
+    { url: `/opc/by-name`,          init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
+    { url: `/api/opc/history`,      init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
+    { url: `/opc/history`,          init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
+  ];
+}
+
+function opcCandidatesByFacet(qs: string, act: number, facet: "S1"|"S2", since: string, asc: boolean) {
+  const body = JSON.stringify({ act, facet, since, asc });
+  return [
+    // GETs
+    { url: `/api/opc/history/facet?${qs}` },
+    { url: `/opc/history/facet?${qs}` },
+    { url: `/api/opc/by-facet?${qs}` },
+    { url: `/opc/by-facet?${qs}` },
+    { url: `/api/opc/query?${qs}` },
+    { url: `/opc/query?${qs}` },
+    { url: `/api/opc/history?${qs}` },
+    { url: `/opc/history?${qs}` },
+
+    // POSTs
+    { url: `/api/opc/history/facet`, init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
+    { url: `/opc/history/facet`,     init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
+    { url: `/api/opc/by-facet`,      init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
+    { url: `/opc/by-facet`,          init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
+    { url: `/api/opc/history`,       init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
+    { url: `/opc/history`,           init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
+  ];
+}
 
 export async function getCyclesTotal(): Promise<CyclesTotalResp> {
   return fetchJson<CyclesTotalResp>(`/api/live/cycles/total`);
 }
 
 // ======================
-// Monitoring
+// Monitoring (HTTP compat via snapshot)
 // ======================
 export async function getCyclesRate60s(windowS: number = 60): Promise<CyclesRateResp> {
-  const r = await fetchJson<ActuatorsCpmResp>(`/api/live/actuators/cpm?window_s=${windowS}`);
-  const sumCycles = (r?.actuators ?? []).reduce((acc, a) => acc + (a.cycles || 0), 0);
-  const sumCpm = (r?.actuators ?? []).reduce((acc, a) => acc + (a.cpm || 0), 0);
-  return {
-    window_seconds: windowS,
-    pairs_count: sumCycles,
-    cycles: sumCycles,
-    cycles_per_second: sumCpm / 60.0,
-  };
+  try {
+    const snap = await fetchJson<any>("/api/slow/snapshot");
+    const items = Array.isArray(snap?.items) ? snap.items : [];
+    const sumCycles = items.reduce((acc: number, it: any) => acc + Number(it.cycles ?? 0), 0);
+    const sumCpm = items.reduce((acc: number, it: any) => acc + Number(it.cpm ?? 0), 0);
+    const win = Number(snap?.window_s ?? windowS);
+    return {
+      window_seconds: win,
+      pairs_count: sumCycles,
+      cycles: sumCycles,
+      cycles_per_second: win > 0 ? sumCpm / 60.0 : 0,
+    };
+  } catch {
+    // fallback legado (se existir)
+    const r = await fetchJson<ActuatorsCpmResp>(`/api/live/actuators/cpm?window_s=${windowS}`);
+    const sumCycles = (r?.actuators ?? []).reduce((acc, a) => acc + (a.cycles || 0), 0);
+    const sumCpm = (r?.actuators ?? []).reduce((acc, a) => acc + (a.cpm || 0), 0);
+    return {
+      window_seconds: windowS,
+      pairs_count: sumCycles,
+      cycles: sumCycles,
+      cycles_per_second: sumCpm / 60.0,
+    };
+  }
 }
 
 export async function getVibrationLive(windowS: number = 2): Promise<VibrationLiveResp> {
-  return fetchJson<VibrationLiveResp>(`/api/live/vibration?window_s=${windowS}`);
+  try {
+    const snap = await fetchJson<any>("/api/monitoring/snapshot");
+    const items: VibrationLiveItem[] = ((snap?.vibration?.items ?? []) as any[]).map((it) => ({
+      mpu_id: Number(it.mpu_id),
+      overall: Number(it.overall ?? 0),
+    }));
+    return { items };
+  } catch {
+    // se houver endpoint antigo, usa
+    return fetchJson<VibrationLiveResp>(`/api/live/vibration?window_s=${windowS}`);
+  }
 }
 
 export async function getActuatorTimings(): Promise<ActuatorTimingsResp> {
-  return fetchJson<ActuatorTimingsResp>(`/api/live/actuators/timings`);
+  try {
+    const snap = await fetchJson<any>("/api/monitoring/snapshot");
+    const timings = Array.isArray(snap?.timings) ? snap.timings : [];
+    return { actuators: timings };
+  } catch {
+    return fetchJson<ActuatorTimingsResp>(`/api/live/actuators/timings`);
+  }
 }
 
 // ======================
 // System status / Health
 // ======================
 export async function getSystemStatus(): Promise<SystemStatusResp> {
+  // Placeholder: mantido para compat futura; por ora usamos /api/health em getHealth()
   return {};
 }
 
@@ -171,14 +324,12 @@ export async function getHealth(): Promise<HealthResp> {
     }
   }
 }
-// src/lib/api.ts  (2/4)
 
 // ======================
 // Analytics (compat OPC)
 // ======================
 export type OPCHistoryRow = { ts: string; value: number | boolean | string | null | undefined };
 
-// Coerção robusta de boolean vindo do OPC
 function toBool01(v: any): 0 | 1 {
   if (v === true || v === "true" || v === "True" || v === "TRUE") return 1;
   if (v === false || v === "false" || v === "False" || v === "FALSE") return 0;
@@ -189,38 +340,25 @@ function toBool01(v: any): 0 | 1 {
   return 0;
 }
 
-// Tenta várias sintaxes de "since" até achar dados
 async function opcSinceVariants(actuatorId: number, facet: "S1" | "S2", since: string, asc = true) {
-  const variants = since.startsWith("-")
-    ? [since, "-120m", "-2h", "-7200s"] // tenta várias
-    : [since];
-
+  const variants = since.startsWith("-") ? [since, "-120m", "-2h", "-7200s"] : [since];
   for (const s of variants) {
-    const qs = new URLSearchParams({
-      act: String(actuatorId),
-      facet,
-      since: s,
-      ...(asc ? { asc: "1" } : {}),
-    });
+    const qs = new URLSearchParams({ act: String(actuatorId), facet, since: s, ...(asc ? { asc: "1" } : {}) }).toString();
     try {
-      const raw = await fetchJson<any>(`/opc/history?${qs.toString()}`);
+      const raw = await fetchFirstOk<any>(opcCandidatesByFacet(qs, actuatorId, facet, s, asc));
       const arr = (Array.isArray(raw) ? raw : raw?.items) ?? [];
       if (arr.length) {
-        if (typeof window !== "undefined")
-          console.info(`[opcSinceVariants] facet=${facet} since=${s} -> ${arr.length} rows`);
+        if (typeof window !== "undefined") console.info(`[opcSinceVariants] facet=${facet} since=${s} -> ${arr.length}`);
         return arr as any[];
       }
-    } catch {
-      // tenta o próximo formato
-    }
+    } catch {}
   }
-  if (typeof window !== "undefined")
-    console.warn(`[opcSinceVariants] facet=${facet} sem dados nas variantes: ${variants.join(", ")}`);
+  if (typeof window !== "undefined") console.warn(`[opcSinceVariants] facet=${facet} sem dados nas variantes`);
   return [] as any[];
 }
 
 export async function getOPCHistory(params: {
-  actuatorId: number;        // 1|2
+  actuatorId: number;
   facet: "S1" | "S2";
   since: string;
   asc?: boolean;
@@ -233,10 +371,9 @@ export async function getOPCHistory(params: {
         value: r.value_bool ?? r.value ?? r.v ?? 0,
       }));
     }
-  } catch {
-    // cai no byName
-  }
-  const name = params.facet === "S1" ? `Recuado_${params.actuatorId}S1` : `Avancado_${params.actuatorId}S2`;
+  } catch {}
+  const name =
+    params.facet === "S1" ? `Recuado_${params.actuatorId}S1` : `Avancado_${params.actuatorId}S2`;
   return getOPCHistoryByName(name, params.since, !!params.asc, 20000);
 }
 
@@ -247,26 +384,23 @@ export async function getOPCHistoryByName(
   limit: number = 20000
 ): Promise<OPCHistoryRow[]> {
   const variants = since.startsWith("-") ? [since, "-120m", "-2h", "-7200s"] : [since];
+
   for (const s of variants) {
-    const qs = new URLSearchParams({ name, since: s, limit: String(limit), ...(asc ? { asc: "1" } : {}) });
+    const qs = new URLSearchParams({ name, since: s, limit: String(limit), ...(asc ? { asc: "1" } : {}) }).toString();
     try {
-      const raw = await fetchJson<any>(`/opc/history?${qs.toString()}`);
+      const raw = await fetchFirstOk<any>(opcCandidatesByName(qs, name, s, limit, asc));
       const arr = (Array.isArray(raw) ? raw : raw?.items) ?? [];
       if (arr.length) {
-        if (typeof window !== "undefined")
-          console.info(`[getOPCHistoryByName] name=${name} since=${s} -> ${arr.length} rows`);
+        if (typeof window !== "undefined") console.info(`[getOPCHistoryByName] ${name} ${s} -> ${arr.length}`);
         return (arr as any[]).map((r) => ({
           ts: String(r.ts_utc ?? r.ts ?? r.time ?? new Date().toISOString()),
           value: r.value_bool ?? r.value ?? r.v ?? 0,
         }));
       }
-    } catch {
-      // tenta próxima
-    }
+    } catch {}
   }
   return [];
 }
-export const getOpcHistoryByName = getOPCHistoryByName;
 
 // ======================
 // Analytics – minute-agg (normalizador)
@@ -281,34 +415,28 @@ export type MinuteAgg = {
   vib_avg?: number | null;
 };
 
-// normaliza uma linha com possíveis aliases vindos do backend
 function normalizeMinuteAggRow(r: any): MinuteAgg | null {
   if (!r) return null;
-  const minute =
-    r.minute ?? r.ts ?? r.bucket_start ?? r.bucket ?? r.time ?? r.t ?? new Date().toISOString();
-
-  // tempos médios
-  const t_open_ms_avg  = r.t_open_ms_avg  ?? r.to_ms_avg ?? r.open_ms_avg  ?? null;
+  const minute = r.minute ?? r.ts ?? r.bucket_start ?? r.bucket ?? r.time ?? r.t ?? new Date().toISOString();
+  const t_open_ms_avg = r.t_open_ms_avg ?? r.to_ms_avg ?? r.open_ms_avg ?? null;
   const t_close_ms_avg = r.t_close_ms_avg ?? r.tf_ms_avg ?? r.close_ms_avg ?? null;
   const t_cycle_ms_avg = r.t_cycle_ms_avg ?? r.tc_ms_avg ?? r.cycle_ms_avg ?? null;
-
-  // runtime em segundos (clamp 0..60)
   let runtime_s =
     r.runtime_s ?? r.runtime ?? (typeof r.runtime_ms === "number" ? r.runtime_ms / 1000 : undefined) ?? 0;
   runtime_s = Number(runtime_s);
   if (!Number.isFinite(runtime_s)) runtime_s = 0;
   runtime_s = Math.max(0, Math.min(60, runtime_s));
-
-  // cpm (ou equivalente)
   let cpm =
-    r.cpm ?? r.cpm_avg ?? r.cpm_sum ?? r.cycles ??
+    r.cpm ??
+    r.cpm_avg ??
+    r.cpm_sum ??
+    r.cycles ??
     (typeof r.cps === "number" ? r.cps * 60 : undefined) ??
-    r.value ?? 0;
+    r.value ??
+    0;
   cpm = Number(cpm);
   if (!Number.isFinite(cpm) || cpm < 0) cpm = 0;
-
   const vib_avg = r.vib_avg ?? r.vibration_avg ?? r.vib ?? null;
-
   return {
     minute: String(minute),
     t_open_ms_avg: t_open_ms_avg != null ? Number(t_open_ms_avg) : null,
@@ -322,14 +450,16 @@ function normalizeMinuteAggRow(r: any): MinuteAgg | null {
 
 const takeArray = (payload: any) =>
   (Array.isArray(payload) && payload) ||
-  payload?.data || payload?.items || payload?.rows || payload?.results || payload?.records || [];
+  payload?.data ||
+  payload?.items ||
+  payload?.rows ||
+  payload?.results ||
+  payload?.records ||
+  [];
 
-/** tenta algumas formas razoáveis de query aceitas por backends diferentes */
 async function tryMinuteAggMany(act: "A1" | "A2", since: string): Promise<MinuteAgg[]> {
   const id = act === "A1" ? "1" : "2";
-  const combos: Array<Record<string, string>> = [
-    { act }, { act: id }, { id }, { actuator: id }, {},
-  ];
+  const combos: Array<Record<string, string>> = [{ act }, { act: id }, { id }, { actuator: id }, {}];
   for (const a of combos) {
     const qs = new URLSearchParams({ ...a, since }).toString();
     const url = `/metrics/minute-agg?${qs}`;
@@ -340,9 +470,7 @@ async function tryMinuteAggMany(act: "A1" | "A2", since: string): Promise<Minute
         const out = arr.map(normalizeMinuteAggRow).filter(Boolean) as MinuteAgg[];
         if (out.length) return out.sort((x, y) => x.minute.localeCompare(y.minute));
       }
-    } catch {
-      // tenta próxima combinação
-    }
+    } catch {}
   }
   return [];
 }
@@ -350,33 +478,23 @@ async function tryMinuteAggMany(act: "A1" | "A2", since: string): Promise<Minute
 export async function getMinuteAgg(act: "A1" | "A2", since: string): Promise<MinuteAgg[]> {
   return tryMinuteAggMany(act, since);
 }
-// src/lib/api.ts  (3/4)
 
 // ======================
-// CPM × Runtime (via OPC — garante dados)
+// CPM × Runtime (via OPC — fallback robusto)
 // ======================
-export type CpmRuntimeMinuteRow = {
-  minute: string;           // ISO do minuto
-  cpm: number | null;       // ciclos no minuto
-  runtime_s: number | null; // segundos ativos (0..60)
-};
-
-// Helpers de tempo/minuto
+export type CpmRuntimeMinuteRow = { minute: string; cpm: number | null; runtime_s: number | null };
 type MinuteMapNum = Map<string, number>;
-
 const toMinuteIsoUTC = (d: Date) =>
-  new Date(Date.UTC(
-    d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(),
-    d.getUTCHours(), d.getUTCMinutes(), 0, 0
-  )).toISOString();
-
+  new Date(
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), 0, 0)
+  ).toISOString();
 const actLabelToId = (act: "A1" | "A2"): 1 | 2 => (act === "A1" ? 1 : 2);
 
-/** CPM por minuto via OPC (conta bordas 0->1 em S2) */
 async function cpmFromOpcByMinute(act: "A1" | "A2", since: string): Promise<MinuteMapNum> {
   const id = actLabelToId(act);
-  const rows = await getOPCHistory({ actuatorId: id, facet: "S2", since, asc: true })
-    .catch(() => [] as OPCHistoryRow[]);
+  const rows = await getOPCHistory({ actuatorId: id, facet: "S2", since, asc: true }).catch(
+    () => [] as OPCHistoryRow[]
+  );
   const map: MinuteMapNum = new Map();
   for (let i = 1; i < rows.length; i++) {
     const prev = toBool01((rows[i - 1] as any).value);
@@ -388,31 +506,33 @@ async function cpmFromOpcByMinute(act: "A1" | "A2", since: string): Promise<Minu
   }
   return map;
 }
-
-/** Runtime em segundos por minuto via OPC (tempo com S2==1) */
 async function runtimeFromOpcByMinute(act: "A1" | "A2", since: string): Promise<MinuteMapNum> {
   const id = actLabelToId(act);
-  const rows = await getOPCHistory({ actuatorId: id, facet: "S2", since, asc: true })
-    .catch(() => [] as OPCHistoryRow[]);
+  const rows = await getOPCHistory({ actuatorId: id, facet: "S2", since, asc: true }).catch(
+    () => [] as OPCHistoryRow[]
+  );
   const out: MinuteMapNum = new Map();
   if (!rows.length) return out;
-
-  // percorre segmentos em que o estado permanece constante
   for (let i = 0; i < rows.length; i++) {
     const v = toBool01((rows[i] as any).value);
-    if (!v) continue; // só contamos quando está "1"
+    if (!v) continue;
     const t0 = new Date(rows[i].ts).getTime();
     const t1 = i + 1 < rows.length ? new Date(rows[i + 1].ts).getTime() : Date.now();
-
-    // fatiar por minuto para agregar corretamente
     let t = t0;
     while (t < t1) {
       const d = new Date(t);
       const key = toMinuteIsoUTC(d);
-      const endOfMinute = new Date(Date.UTC(
-        d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(),
-        d.getUTCHours(), d.getUTCMinutes(), 59, 999
-      )).getTime();
+      const endOfMinute = new Date(
+        Date.UTC(
+          d.getUTCFullYear(),
+          d.getUTCMonth(),
+          d.getUTCDate(),
+          d.getUTCHours(),
+          d.getUTCMinutes(),
+          59,
+          999
+        )
+      ).getTime();
       const chunkEnd = Math.min(endOfMinute + 1, t1);
       const sec = Math.max(0, Math.min(60, (chunkEnd - t) / 1000));
       out.set(key, Math.min(60, (out.get(key) ?? 0) + sec));
@@ -422,41 +542,28 @@ async function runtimeFromOpcByMinute(act: "A1" | "A2", since: string): Promise<
   return out;
 }
 
-/** NOVA implementação robusta: usa minute-agg se houver; senão calcula pelo OPC. */
 export async function getCpmRuntimeMinute(
   act: "A1" | "A2",
-  since: string = "-120m" // usa um formato que sabemos que o backend aceita
+  since: string = "-120m"
 ): Promise<CpmRuntimeMinuteRow[]> {
-  // 1) tenta minute-agg (se o backend fornecer)
   const minuteAgg = await tryMinuteAggMany(act, since).catch(() => [] as MinuteAgg[]);
   if (minuteAgg.length) {
-    const rows = minuteAgg.map(r => ({
-      minute: r.minute,
-      cpm: r.cpm ?? 0,
-      runtime_s: r.runtime_s ?? 0,
-    })).sort((a,b) => a.minute.localeCompare(b.minute));
+    const rows = minuteAgg
+      .map((r) => ({ minute: r.minute, cpm: r.cpm ?? 0, runtime_s: r.runtime_s ?? 0 }))
+      .sort((a, b) => a.minute.localeCompare(b.minute));
     if (typeof window !== "undefined")
-      console.info(`[getCpmRuntimeMinute][${act}] via minute-agg -> ${rows.length} pontos`);
+      console.info(`[getCpmRuntimeMinute][${act}] via minute-agg -> ${rows.length}`);
     return rows;
   }
-
-  // 2) fallback 100% via OPC (com since variants já dentro do getOPCHistory)
   const [cpmMap, rtMap] = await Promise.all([
     cpmFromOpcByMinute(act, since),
     runtimeFromOpcByMinute(act, since),
   ]);
-
   const keys = new Set<string>([...cpmMap.keys(), ...rtMap.keys()]);
   const rows: CpmRuntimeMinuteRow[] = [];
-  for (const k of keys) {
-    rows.push({ minute: k, cpm: cpmMap.get(k) ?? 0, runtime_s: rtMap.get(k) ?? 0 });
-  }
+  for (const k of keys) rows.push({ minute: k, cpm: cpmMap.get(k) ?? 0, runtime_s: rtMap.get(k) ?? 0 });
   rows.sort((a, b) => a.minute.localeCompare(b.minute));
-
-  if (typeof window !== "undefined") {
-    console.info(`[getCpmRuntimeMinute][${act}] via OPC -> ${rows.length} pontos`);
-    if (!rows.length) console.warn("[getCpmRuntimeMinute] Nenhum ponto: verifique se há transições S2 0→1 no período.");
-  }
+  if (typeof window !== "undefined") console.info(`[getCpmRuntimeMinute][${act}] via OPC -> ${rows.length}`);
   return rows;
 }
 
@@ -489,46 +596,52 @@ export async function getLiveActuatorsState(): Promise<{
   };
 
   try {
-    const data = await fetchJson<any>("/api/live/actuators/state-mon");
-
-    let status = String(data?.system?.status ?? "").toLowerCase();
-    if (!status) {
-      try {
-        const h = await getHealth();
-        status = String(h?.status ?? "unknown").toLowerCase();
-      } catch {
-        status = "unknown";
-      }
-    }
-
+    // novo snapshot WS-first
+    const data = await fetchJson<any>("/api/live/snapshot");
+    let status = "unknown";
+    try {
+      const h = await getHealth();
+      status = String(h?.status ?? "unknown").toLowerCase();
+    } catch {}
     const arr = Array.isArray(data?.actuators) ? data.actuators : [];
     const actuators = arr.map(normAct).filter(Boolean);
-
-    return {
-      ts: String(data?.ts ?? new Date().toISOString()),
-      system: { status },
-      actuators,
-    };
+    return { ts: String(data?.ts ?? new Date().toISOString()), system: { status }, actuators };
   } catch {
+    // Fallbacks legados
     try {
-      const raw = await fetchJson<any>("/api/live/actuators/state");
-      const arr = Array.isArray(raw?.actuators) ? raw.actuators : [];
+      const data = await fetchJson<any>("/api/live/actuators/state-mon");
+      let status = String(data?.system?.status ?? "").toLowerCase();
+      if (!status) {
+        try {
+          const h = await getHealth();
+          status = String(h?.status ?? "unknown").toLowerCase();
+        } catch {
+          status = "unknown";
+        }
+      }
+      const arr = Array.isArray(data?.actuators) ? data.actuators : [];
       const actuators = arr.map(normAct).filter(Boolean);
-      const h = await getHealth().catch(() => ({ status: "offline" } as any));
-      return {
-        ts: String(raw?.ts ?? new Date().toISOString()),
-        system: { status: String((h as any)?.status ?? "unknown") },
-        actuators,
-      };
+      return { ts: String(data?.ts ?? new Date().toISOString()), system: { status }, actuators };
     } catch {
-      const h = await getHealth().catch(() => ({ status: "offline" } as any));
-      return { ts: new Date().toISOString(), system: { status: String((h as any).status) }, actuators: [] };
+      try {
+        const raw = await fetchJson<any>("/api/live/actuators/state");
+        const arr = Array.isArray(raw?.actuators) ? raw.actuators : [];
+        const actuators = arr.map(normAct).filter(Boolean);
+        const h = await getHealth().catch(() => ({ status: "offline" } as any));
+        return {
+          ts: String(raw?.ts ?? new Date().toISOString()),
+          system: { status: String((h as any)?.status ?? "unknown") },
+          actuators,
+        };
+      } catch {
+        const h = await getHealth().catch(() => ({ status: "offline" } as any));
+        return { ts: new Date().toISOString(), system: { status: String((h as any).status) }, actuators: [] };
+      }
     }
   }
 }
-// src/lib/api.ts  (4/4)
 
-// ---- MPU: ids disponíveis ----
+// ---- MPU helpers (existentes) ----
 export async function getMpuIds(): Promise<Array<string | number>> {
   try {
     const r = await fetchJson<any>("/mpu/ids");
@@ -543,14 +656,21 @@ export async function getMpuIds(): Promise<Array<string | number>> {
   }
 }
 
-// ---- MPU: último valor ----
 export type MpuLatestCompat = {
   ts_utc: string;
   id: string | number;
-  ax: number; ay: number; az: number;
-  gx?: number; gy?: number; gz?: number;
-  ax_g?: number | null; ay_g?: number | null; az_g?: number | null;
-  gx_dps?: number | null; gy_dps?: number | null; gz_dps?: number | null;
+  ax: number;
+  ay: number;
+  az: number;
+  gx?: number;
+  gy?: number;
+  gz?: number;
+  ax_g?: number | null;
+  ay_g?: number | null;
+  az_g?: number | null;
+  gx_dps?: number | null;
+  gy_dps?: number | null;
+  gz_dps?: number | null;
   temp_c?: number | null;
 };
 
@@ -567,11 +687,9 @@ export async function getLatestMPU(id: number | "MPUA1" | "MPUA2" | string): Pro
       return null;
     }
   }
-
   const items: any[] = Array.isArray(raw?.items) ? raw.items : Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : [];
   if (!items.length) return null;
   const r = items[0];
-
   const ts = String(r.ts_utc ?? r.ts ?? new Date().toISOString());
   const ax = Number(r.ax ?? r.ax_g ?? r.x ?? 0);
   const ay = Number(r.ay ?? r.ay_g ?? r.y ?? 0);
@@ -579,18 +697,35 @@ export async function getLatestMPU(id: number | "MPUA1" | "MPUA2" | string): Pro
   const gx = Number(r.gx ?? r.gx_dps ?? 0);
   const gy = Number(r.gy ?? r.gy_dps ?? 0);
   const gz = Number(r.gz ?? r.gz_dps ?? 0);
-
   return {
-    ts_utc: ts, id: r.id ?? id,
-    ax, ay, az, gx, gy, gz,
-    ax_g: r.ax_g ?? ax, ay_g: r.ay_g ?? ay, az_g: r.az_g ?? az,
-    gx_dps: r.gx_dps ?? gx, gy_dps: r.gy_dps ?? gy, gz_dps: r.gz_dps ?? gz,
+    ts_utc: ts,
+    id: r.id ?? id,
+    ax,
+    ay,
+    az,
+    gx,
+    gy,
+    gz,
+    ax_g: r.ax_g ?? ax,
+    ay_g: r.ay_g ?? ay,
+    az_g: r.az_g ?? az,
+    gx_dps: r.gx_dps ?? gx,
+    gy_dps: r.gy_dps ?? gy,
+    gz_dps: r.gz_dps ?? gz,
     temp_c: r.temp_c ?? null,
   };
 }
 export const getMpuLatest = getLatestMPU;
 
-export type MpuHistoryRow = { ts: string; ax: number; ay: number; az: number; gx?: number; gy?: number; gz?: number };
+export type MpuHistoryRow = {
+  ts: string;
+  ax: number;
+  ay: number;
+  az: number;
+  gx?: number;
+  gy?: number;
+  gz?: number;
+};
 
 export async function getMPUHistory(
   id: number | "MPUA1" | "MPUA2" | string,
@@ -600,7 +735,6 @@ export async function getMPUHistory(
 ): Promise<MpuHistoryRow[]> {
   const asStr = String(id);
   const qs = new URLSearchParams({ id: asStr, since, limit: String(limit), ...(asc ? { asc: "1" } : {}) });
-
   let raw: any;
   try {
     raw = await fetchJson<any>(`/mpu/history?${qs.toString()}`);
@@ -611,7 +745,6 @@ export async function getMPUHistory(
       return [];
     }
   }
-
   const items: any[] = Array.isArray(raw?.items) ? raw.items : Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : [];
   return items.map((r) => ({
     ts: String(r.ts_utc ?? r.ts ?? r.timestamp ?? r.time ?? new Date().toISOString()),
@@ -625,9 +758,7 @@ export async function getMPUHistory(
 }
 export const getMpuHistory = getMPUHistory;
 
-// --- Utilitários p/ “última amostra” MPU robusta ---
 export type MpuSample = { ts: string; ax?: number; ay?: number; az?: number; gx?: number; gy?: number; gz?: number };
-
 function normalizeMpuSample(raw: any): MpuSample | null {
   if (!raw) return null;
   const ts = String(raw.ts_utc ?? raw.ts ?? raw.timestamp ?? raw.time ?? new Date().toISOString());
@@ -653,31 +784,25 @@ function pickOneMpuSample(payload: any): any {
   if (Array.isArray(p)) return p[0] ?? null;
   return p;
 }
-
 export async function getMpuLatestSafe(nameOrId: string): Promise<MpuSample | null> {
   const s = String(nameOrId).trim();
   const m = /^MPUA?(\d+)$/i.exec(s);
   const idName = m?.[1] ? `MPUA${m[1]}` : /^\d+$/.test(s) ? `MPUA${s}` : s.toUpperCase();
-
   const qsName = new URLSearchParams({ name: idName }).toString();
   const qsId = new URLSearchParams({ id: idName }).toString();
-
   const urls = [
     `/mpu/history?${qsName}`,
     `/mpu/history?${qsId}`,
     `/api/mpu/history?${qsName}`,
     `/api/mpu/history?${qsId}`,
   ];
-
   for (const url of urls) {
     try {
       const r = await fetchJson<any>(url);
       const one = pickOneMpuSample(r);
       const norm = normalizeMpuSample(one);
       if (norm && (norm.ax != null || norm.ay != null || norm.az != null)) return norm;
-    } catch {
-      // tenta próxima
-    }
+    } catch {}
   }
   return null;
 }
@@ -690,11 +815,11 @@ export type AlertItem = {
   id: number | string;
   code: string;
   type?: string;
-  severity: number; // 1..5
+  severity: number;
   message: string;
-  origin?: string; // A1/A2/S1/S2
+  origin?: string;
   status?: "open" | "ack" | "closed";
-  created_at: string; // ISO
+  created_at: string;
   actuator_id?: number | null;
   value?: number | null;
   limit_value?: number | null;
@@ -707,23 +832,279 @@ export async function getAlerts(limit = 5): Promise<{ items: AlertItem[]; count:
   return fetchJson<{ items: AlertItem[]; count: number }>(`/alerts?limit=${limit}`);
 }
 
-// DASHBOARD (fast path)
-export async function getActuatorsStateFast(): Promise<{
+// ============================================================================
+// =======================   WEBSOCKET CLIENTS   ==============================
+// ============================================================================
+
+// Mensagens WS (contratos novos)
+export type WSMessageLive = { type: "live"; ts: string; actuators: { id: number; state: StableState }[] };
+export type WSMessageMonitoring = {
+  type: "monitoring";
   ts: string;
-  actuators: { actuator_id: 1|2; state: "RECUADO"|"AVANÇADO"; pending: "AV"|"REC"|null; fault: string; elapsed_ms: number; started_at: string|null }[];
-}> {
-  const bust = Date.now();
-  return fetchJson(`/api/live/actuators/state?_=${bust}`);
+  timings: {
+    actuator_id: number;
+    last: { dt_abre_s: number | null; dt_fecha_s: number | null; dt_ciclo_s: number | null };
+  }[];
+  vibration: { window_s: number; items: { mpu_id: number; overall: number }[] };
+};
+export type WSMessageCPM = { type: "cpm"; ts: string; window_s: number; items: { id: number; cpm: number; window_s: number }[] };
+export type WSMessageAlert = { type: "alert"; ts: string; code: string; severity: number; origin?: string; message: string };
+export type WSHeartbeat = { type: "hb"; ts: string; channel?: string };
+export type WSError = { type: "error"; channel?: string; detail: string; ts?: string };
+
+export type AnyWSMessage = WSMessageLive | WSMessageMonitoring | WSMessageCPM | WSMessageAlert | WSHeartbeat | WSError;
+
+export type WSHandlers = {
+  onMessage?: (msg: AnyWSMessage) => void;
+  onOpen?: (ev: Event) => void;
+  onClose?: (ev: CloseEvent) => void;
+  onError?: (ev: Event) => void;
+};
+
+export type WSOptions = {
+  manageVisibility?: boolean; // pausa quando hidden e retoma quando visible
+  fallbackSnapshot?: "live" | "monitoring" | null; // liga polling de snapshot quando sem WS
+  fallbackIntervalMs?: number; // 200 para live, 2000 para monitoring
+  maxBackoffMs?: number; // 10000 por padrão
+};
+
+function wsUrl(path: string) {
+  const base = getApiBase();
+  const u = new URL(path.startsWith("/") ? path : `/${path}`, base);
+  u.protocol = u.protocol.replace("http", "ws");
+  return u.toString();
 }
 
-export async function fetchJsonAbortable<T = any>(path: string, signal: AbortSignal): Promise<T> {
-  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
-  const res = await fetch(url, { cache: "no-store", signal });
-  if (!res.ok) throw new Error(`API ${res.status} ${res.statusText} on ${url}`);
+export type WSHandle = {
+  pause(): void;
+  resume(): void;
+  close(code?: number, reason?: string): void;
+  isOpen(): boolean;
+  /** socket atual (ou null se pausado/fechado) */
+  socket(): WebSocket | null;
+};
+
+type InternalState = {
+  url: string;
+  handlers: WSHandlers;
+  opts: Required<WSOptions>;
+  ws: WebSocket | null;
+  intentionallyClosed: boolean;
+  paused: boolean;
+  backoffMs: number;
+  fallbackTimer: number | null;
+  visHandler?: (() => void) | null;
+};
+
+const DEFAULT_WS_OPTS: Required<WSOptions> = {
+  manageVisibility: true,
+  fallbackSnapshot: null,
+  fallbackIntervalMs: 2000,
+  maxBackoffMs: 10000,
+};
+
+function startSnapshotFallback(
+  kind: "live" | "monitoring",
+  everyMs: number,
+  onMessage: (m: AnyWSMessage) => void
+): number {
+  const tick = async () => {
+    try {
+      if (kind === "live") {
+        const p = await fetchJson<any>("/api/live/snapshot");
+        onMessage({
+          type: "live",
+          ts: String(p?.ts ?? new Date().toISOString()),
+          actuators: (p?.actuators ?? []).map((a: any) => ({
+            id: Number(a.id ?? a.actuator_id),
+            state: a.state,
+          })),
+        } as WSMessageLive);
+      } else {
+        const p = await fetchJson<any>("/api/monitoring/snapshot");
+        onMessage(p as WSMessageMonitoring);
+      }
+    } catch {}
+  };
+  // @ts-ignore
+  const id = window.setInterval(tick, everyMs);
+  tick(); // primeiro preenchimento
+  return id;
+}
+
+function clearFallbackTimer(state: InternalState) {
+  if (state.fallbackTimer != null) {
+    // @ts-ignore
+    window.clearInterval(state.fallbackTimer);
+    state.fallbackTimer = null;
+  }
+}
+
+function openWS(path: string, handlers: WSHandlers = {}, options: WSOptions = {}): WSHandle {
+  const state: InternalState = {
+    url: wsUrl(path),
+    handlers,
+    opts: { ...DEFAULT_WS_OPTS, ...options },
+    ws: null,
+    intentionallyClosed: false,
+    paused: false,
+    backoffMs: 250,
+    fallbackTimer: null,
+    visHandler: null,
+  };
+
+  const openSocket = () => {
+    if (state.paused || state.intentionallyClosed) return;
+    try {
+      const ws = new WebSocket(state.url);
+      state.ws = ws;
+
+      ws.onopen = (ev) => {
+        state.backoffMs = 250; // reset backoff
+        clearFallbackTimer(state); // cancela fallback ativo
+        state.handlers.onOpen?.(ev);
+      };
+
+      ws.onerror = (ev) => {
+        state.handlers.onError?.(ev);
+      };
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          state.handlers.onMessage?.(msg);
+        } catch {
+          // ignora mensagens não-JSON
+        }
+      };
+
+      ws.onclose = (ev) => {
+        state.handlers.onClose?.(ev);
+        state.ws = null;
+        if (!state.intentionallyClosed && !state.paused) {
+          // ativa fallback durante o período offline
+          if (state.opts.fallbackSnapshot && state.fallbackTimer == null && typeof window !== "undefined") {
+            const interval = state.opts.fallbackIntervalMs;
+            state.fallbackTimer = startSnapshotFallback(
+              state.opts.fallbackSnapshot,
+              interval,
+              (m) => state.handlers.onMessage?.(m)
+            );
+          }
+          // agenda reconexão (backoff exponencial com teto)
+          const next = state.backoffMs;
+          state.backoffMs = Math.min(state.opts.maxBackoffMs, Math.floor(state.backoffMs * 1.8));
+          // @ts-ignore
+          window.setTimeout(() => {
+            if (!state.paused && !state.intentionallyClosed) openSocket();
+          }, next);
+        }
+      };
+    } catch {
+      // erro sincrono ao abrir: agenda retry
+      if (!state.intentionallyClosed && !state.paused) {
+        const next = state.backoffMs;
+        state.backoffMs = Math.min(state.opts.maxBackoffMs, Math.floor(state.backoffMs * 1.8));
+        // @ts-ignore
+        window.setTimeout(() => openSocket(), next);
+      }
+    }
+  };
+
+  // visibilidade (pausa quando hidden, retoma quando visible)
+  if (state.opts.manageVisibility && typeof document !== "undefined") {
+    state.visHandler = () => {
+      const hidden = document.visibilityState === "hidden";
+      if (hidden) api.pause();
+      else api.resume();
+    };
+    document.addEventListener("visibilitychange", state.visHandler);
+  }
+
+  // abre imediatamente
+  openSocket();
+
+  const api: WSHandle = {
+    pause() {
+      state.paused = true;
+      clearFallbackTimer(state);
+      if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+        try {
+          state.ws.close(4900, "paused");
+        } catch {}
+      }
+      state.ws = null;
+    },
+    resume() {
+      if (!state.paused || state.intentionallyClosed) return;
+      state.paused = false;
+      clearFallbackTimer(state);
+      state.backoffMs = 250;
+      openSocket();
+    },
+    close(code = 1000, reason = "client-close") {
+      state.intentionallyClosed = true;
+      clearFallbackTimer(state);
+      if (state.visHandler) {
+        document.removeEventListener("visibilitychange", state.visHandler);
+        state.visHandler = null;
+      }
+      if (state.ws && state.ws.readyState <= WebSocket.CLOSING) {
+        try {
+          state.ws.close(code, reason);
+        } catch {}
+      }
+      state.ws = null;
+    },
+    isOpen() {
+      return !!state.ws && state.ws.readyState === WebSocket.OPEN;
+    },
+    socket() {
+      return state.ws;
+    },
+  };
+
+  return api;
+}
+
+// Facades específicas (com fallback configurado conforme o plano)
+export function openLiveWS(handlers: WSHandlers): WSHandle {
+  return openWS("/ws/live", handlers, {
+    manageVisibility: true,
+    fallbackSnapshot: "live",
+    fallbackIntervalMs: 500, // antes: 200 — ajuste fino pra aliviar backend
+    maxBackoffMs: 10000,
+  });
+}
+
+export function openMonitoringWS(handlers: WSHandlers): WSHandle {
+  return openWS("/ws/monitoring", handlers, {
+    manageVisibility: true,
+    fallbackSnapshot: "monitoring",
+    fallbackIntervalMs: 2000, // 2 s para Monitoring
+    maxBackoffMs: 10000,
+  });
+}
+
+export function openSlowWS(handlers: WSHandlers): WSHandle {
+  // sem fallback (CPM/alerts não precisam render "em tempo real" se WS caiu)
+  return openWS("/ws/slow", handlers, {
+    manageVisibility: true,
+    fallbackSnapshot: null,
+    fallbackIntervalMs: 60000,
+    maxBackoffMs: 10000,
+  });
+}
+const BASE = import.meta.env.VITE_API_BASE?.replace(/\/$/, "") || "";
+
+async function http<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { "Content-Type": "application/json" },
+    ...init,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`${res.status} ${res.statusText} - ${text || "request failed"}`);
+  }
   return (await res.json()) as T;
-}
-
-export async function getActuatorsStateFastAbortable(signal: AbortSignal) {
-  const bust = Date.now();
-  return fetchJsonAbortable(`/api/live/actuators/state2?_=${bust}`, signal);
 }
