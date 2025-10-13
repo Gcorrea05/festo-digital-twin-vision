@@ -5,6 +5,7 @@ import KpiCard, { type Severity } from "./KpiCard";
 import { useLive } from "@/context/LiveContext";
 import SystemStatusPanel from "@/components/monitoring/SystemStatusPanel";
 import { rules, type SystemStatus } from "@/config/healthRules";
+import RuntimeTicker from "@/components/dashboard/RuntimeTicker";
 
 type EstadoStr = "ABERTO" | "FECHADO" | "ERRO" | "DESCONHECIDO" | "...";
 
@@ -81,6 +82,13 @@ export default function StatusOverview() {
       {/* KPIs topo — Sistema + Atuadores (filtrados se houver seleção) */}
       <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-4">
         <KpiCard title="STATUS DO SISTEMA" value={statusSistemaText} severity={sevSistema} />
+
+        {/* Novo KPI: Runtime com ticker no cliente (continua subindo mesmo sem novos heartbeats) */}
+        <KpiCard
+          title="RUNTIME"
+          value={<span className="font-mono"><RuntimeTicker fast /></span>}
+          severity="gray"
+        />
 
         {list.map(({ id, row }) => {
           const estado = estadoFromFacets(row?.facets) as EstadoStr;

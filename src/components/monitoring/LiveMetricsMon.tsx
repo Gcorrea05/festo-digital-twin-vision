@@ -12,6 +12,25 @@ import {
 
 type Props = { selectedId: 1 | 2 };
 
+// ------------------- helpers defensivos -------------------
+function n(x: any): number | null {
+  const v = Number(x);
+  return Number.isFinite(v) ? v : null;
+}
+function msFromEitherSecondsOrMs(secField?: any, msField?: any): number | null {
+  const ms = n(msField);
+  if (ms != null) return Math.round(ms);
+  const sec = n(secField);
+  return sec != null ? Math.round(sec * 1000) : null;
+}
+function pickFirst<T = any>(...vals: any[]): T | null {
+  for (const v of vals) {
+    if (v !== undefined && v !== null) return v as T;
+  }
+  return null;
+}
+// ----------------------------------------------------------
+
 const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
   const { snapshot } = useLive();
 
@@ -22,7 +41,6 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
     if (s === "degraded") return "DEGRADED";
     if (s === "down" || s === "offline") return "OFFLINE";
     return "—";
-    // patch: depende só do status, não do snapshot inteiro
   }, [snapshot?.system?.status]);
 
   // --- Estados exibidos ---
@@ -36,35 +54,71 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
   const aliveRef = useRef(true);
   useEffect(() => {
     aliveRef.current = true;
-    return () => {
-      aliveRef.current = false;
-    };
+    return () => void (aliveRef.current = false);
   }, []);
 
-  // Helper
-  const secToMs = (val: number | null | undefined) =>
-    val == null ? null : Number.isFinite(Number(val)) ? Math.round(Number(val) * 1000) : null;
-
-  // --- Inscrição no /ws/monitoring (2 s): timings + vibração (overall) ---
+  // --- /ws/monitoring: timings + vibração ---
   useEffect(() => {
     const handleMonitoring = (msg: WSMessageMonitoring) => {
-      // timings
-      const act = (msg.timings || []).find((a) => Number(a.actuator_id) === selectedId);
-      const openMs = secToMs(act?.last?.dt_abre_s);
-      const closeMs = secToMs(act?.last?.dt_fecha_s);
-      const cycleBackend = secToMs(act?.last?.dt_ciclo_s);
-      const cycleMs = cycleBackend ?? (openMs != null && closeMs != null ? openMs + closeMs : null);
+      // ======= Timings por atuador =======
+      const timingsArr =
+        (Array.isArray((msg as any).timings) && (msg as any).timings) ||
+        (Array.isArray((msg as any).actuators) && (msg as any).actuators) ||
+        [];
 
-      // vibração: overall por mpu_id (1 -> A1, 2 -> A2)
+      const act = (timingsArr as any[]).find((a) => {
+        const aid = n(a?.actuator_id) ?? n(a?.id);
+        return aid === selectedId;
+      });
+
+      const last = act?.last ?? act?.latest ?? act;
+
+      // aceita *_s ou *_ms, e sinônimos
+      const openMs = msFromEitherSecondsOrMs(
+        pickFirst(last?.dt_abre_s, last?.dtOpen_s, last?.open_s),
+        pickFirst(last?.dt_abre_ms, last?.dtOpen_ms, last?.open_ms)
+      );
+      const closeMs = msFromEitherSecondsOrMs(
+        pickFirst(last?.dt_fecha_s, last?.dtClose_s, last?.close_s),
+        pickFirst(last?.dt_fecha_ms, last?.dtClose_ms, last?.close_ms)
+      );
+      const cycleMs = pickFirst(
+        msFromEitherSecondsOrMs(
+          pickFirst(last?.dt_ciclo_s, last?.dtCycle_s, last?.cycle_s),
+          pickFirst(last?.dt_ciclo_ms, last?.dtCycle_ms, last?.cycle_ms)
+        ),
+        openMs != null && closeMs != null ? openMs + closeMs : null
+      );
+
+      // ======= Vibração overall por MPU =======
+      // coleções possíveis: items | overall_by_mpu | by_mpu | list
+      const vSrc =
+        (Array.isArray((msg as any)?.vibration?.items) && (msg as any).vibration.items) ||
+        (Array.isArray((msg as any)?.vibration?.overall_by_mpu) &&
+          (msg as any).vibration.overall_by_mpu) ||
+        (Array.isArray((msg as any)?.vibration?.by_mpu) && (msg as any).vibration.by_mpu) ||
+        (Array.isArray((msg as any)?.vibration?.list) && (msg as any).vibration.list) ||
+        [];
       const targetMpu = selectedId === 1 ? 1 : 2;
-      const vibItem = (msg.vibration?.items || []).find((it) => Number(it.mpu_id) === targetMpu);
-      const overall = vibItem?.overall != null ? Number(vibItem.overall) : null;
+
+      const vibItem = (vSrc as any[]).find((it) => {
+        const mid = n(it?.mpu_id) ?? n(it?.id);
+        return mid === targetMpu;
+      });
+
+      const overall = pickFirst(
+        n(vibItem?.overall),
+        n(vibItem?.overall_rms),
+        n(vibItem?.v_overall),
+        n(vibItem?.rms),
+        n(vibItem?.value)
+      );
 
       if (!aliveRef.current) return;
       setTOpenMs(openMs);
       setTCloseMs(closeMs);
       setTCycleMs(cycleMs);
-      setVibOverall(Number.isFinite(overall as number) ? (overall as number) : null);
+      setVibOverall(overall);
     };
 
     const wsMon = openMonitoringWS({
@@ -78,13 +132,23 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
     };
   }, [selectedId]);
 
-  // --- Inscrição no /ws/slow (60 s): CPM por atuador ---
+  // --- /ws/slow: CPM por atuador ---
   useEffect(() => {
     const handleCpm = (msg: WSMessageCPM) => {
-      const item = (msg.items || []).find((a) => Number(a.id) === selectedId);
-      const v = item ? Number(item.cpm) : null;
+      const arr =
+        (Array.isArray((msg as any).items) && (msg as any).items) ||
+        (Array.isArray((msg as any).actuators) && (msg as any).actuators) ||
+        (Array.isArray((msg as any).cpm) && (msg as any).cpm) ||
+        [];
+
+      const item = (arr as any[]).find((a) => {
+        const aid = n(a?.id) ?? n(a?.actuator_id);
+        return aid === selectedId;
+      });
+
+      const v = pickFirst(n(item?.cpm), n(item?.cpm_1min), n(item?.cpm_60s));
       if (!aliveRef.current) return;
-      setCpm(Number.isFinite(v as number) ? (v as number) : null);
+      setCpm(v);
     };
 
     const wsSlow = openSlowWS({
@@ -97,7 +161,6 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
       wsSlow.close();
     };
   }, [selectedId]);
-
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
       {/* CPM (1 min) — fixo para A{selectedId} */}
@@ -158,7 +221,7 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
         </CardContent>
       </Card>
 
-      {/* DTCiclo = aberto + fechado */}
+      {/* DTCiclo = aberto + fechado (ou valor do back) */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">DTCiclo (últ.)</CardTitle>
@@ -173,5 +236,4 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
   );
 };
 
-// patch: evita renders desnecessários quando props/snapshot não mudam
 export default React.memo(LiveMetricsMon);
