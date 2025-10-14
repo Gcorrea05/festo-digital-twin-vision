@@ -39,8 +39,11 @@ export default function Simulation() {
   const [catError,   setCatError]   = useState<string | null>(null);
 
   const [loading, setLoading] = useState(false);
-  const [paused3D, setPaused3D] = useState(false);
+  const [paused3D, setPaused3D] = useState(true); // começa pausado
   const [openDlg, setOpenDlg] = useState(false);
+
+  // RESET do 3D via remount controlado por key
+  const [modelKey, setModelKey] = useState(0);
 
   // evita setState após unmount
   const alive = useRef(true);
@@ -90,7 +93,7 @@ export default function Simulation() {
     if (!selectedCode) return;
     setScenario(null);
     setOpenDlg(false);
-    setPaused3D(false);      // começa animado imediatamente
+    setPaused3D(false);      // começa animado imediatamente (play)
     setLoading(true);
 
     try {
@@ -103,9 +106,18 @@ export default function Simulation() {
 
       if (!alive.current) return;
 
+      // debug de randomização
+      console.log("[SIM] scenario:", j?.scenario_id, "code:", j?.error?.code);
+
       setScenario(j);
-      if (j.ui?.halt_3d) setPaused3D(true);
-      if (j.ui?.show_popup !== false) setOpenDlg(true);
+
+      // pausar sempre que o pop-up aparecer; se não houver pop-up, respeita halt_3d
+      if (j?.ui?.show_popup !== false) {
+        setOpenDlg(true);
+        setPaused3D(true);   // pausa junto com o pop-up
+      } else if (j?.ui?.halt_3d) {
+        setPaused3D(true);
+      }
     } catch (e) {
       console.error(e);
       if (alive.current) alert("Falha ao gerar cenário.");
@@ -126,7 +138,8 @@ export default function Simulation() {
       <h1 className="text-2xl font-bold">Simulation</h1>
 
       <div className="shadow-md rounded-lg border border-slate-700/40 bg-[#0b1220] p-4 space-y-4">
-        <ThreeDModel paused={paused3D} />
+        {/* RESET controlado pela key */}
+        <ThreeDModel key={modelKey} paused={paused3D} />
 
         <div className="flex items-center gap-3 flex-wrap">
           <label className="text-sm font-medium">Tipo de erro:</label>
@@ -135,7 +148,12 @@ export default function Simulation() {
             <select
               className="rounded px-3 py-2 min-w-72 text-white bg-slate-900/70 border border-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500"
               value={selectedCode}
-              onChange={(e) => { setSelectedCode(e.target.value); setScenario(null); setPaused3D(false); }}
+              onChange={(e) => {
+                setSelectedCode(e.target.value);
+                setScenario(null);
+                setPaused3D(true);     // volta pausado
+                setModelKey(k => k+1); // RESET: retorna à pose inicial
+              }}
             >
               <option value="" disabled>
                 {catLoading ? "Carregando cenários..." : catError ? "Falha ao carregar" : "Selecione um cenário"}
@@ -196,16 +214,28 @@ export default function Simulation() {
               </div>
 
               <div className="flex gap-3 mt-6 justify-end">
-                <Button variant="secondary" onClick={() => alert("Erro reconhecido (ACK).")}>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    // Reconhecer => PAUSA, fecha popup e RESET 3D à pose inicial
+                    setPaused3D(true);
+                    setOpenDlg(false);
+                    setScenario(null);
+                    setModelKey(k => k+1); // RESET
+                    alert("Erro reconhecido (ACK).");
+                  }}
+                >
                   Reconhecer
                 </Button>
 
                 {scenario.resume_allowed ? (
                   <Button
                     onClick={() => {
+                      // Retomar (mantém sua função atual)
                       setScenario(null);
-                      setPaused3D(false);
+                      setPaused3D(true);   // você pediu para pausar no retomar
                       setOpenDlg(false);
+                      setModelKey(k => k+1); // RESET também é útil aqui
                     }}
                   >
                     Retomar
@@ -214,9 +244,11 @@ export default function Simulation() {
                   <Button
                     variant="destructive"
                     onClick={() => {
+                      // Encerrar => PAUSA e RESET
                       setScenario(null);
                       setPaused3D(true);
                       setOpenDlg(false);
+                      setModelKey(k => k+1); // RESET
                     }}
                   >
                     Encerrar simulação
