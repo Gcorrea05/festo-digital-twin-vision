@@ -20,8 +20,6 @@ function toArray<T = any>(x: any): T[] {
   }
   return [];
 }
-const toMinuteKey = (d: Date) =>
-  d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
 
 const toMinuteIsoUTC = (d: Date) =>
   new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(),
@@ -39,7 +37,7 @@ const C = {
 };
 
 // Tipos
-type CpmPoint = { t: string; A1: number; A2: number };
+type CpmPoint = { minute: string; A1: number; A2: number };
 type MinuteAgg = {
   minute: string;
   t_open_ms_avg: number | null;
@@ -130,9 +128,14 @@ const Analytics: React.FC = () => {
   // ===== Produção (CPM 60m via histórico S2) — comparativo =====
   const [cpmSeries, setCpmSeries] = useState<CpmPoint[]>([]);
   const loadCpm60 = useCallback(async () => {
-    const now = Date.now();
-    const start = now - 60 * 60 * 1000;
-    const keys = Array.from({ length: 60 }, (_, i) => toMinuteKey(new Date(now - (59 - i) * 60000)));
+    const nowMs = Date.now();
+    const start = nowMs - 60 * 60 * 1000;
+
+    // últimos 60 minutos em ISO UTC (por minuto)
+    const keys = Array.from({ length: 60 }, (_, i) => {
+      const d = new Date(nowMs - (59 - i) * 60000);
+      return toMinuteIsoUTC(d);
+    });
     const buckets = new Map<string, { A1: number; A2: number }>(keys.map((k) => [k, { A1: 0, A2: 0 }]));
 
     const agg = async (id: 1 | 2, label: "A1" | "A2") => {
@@ -143,7 +146,7 @@ const Analytics: React.FC = () => {
         if (prev === 0 && curr === 1) {
           const ts = new Date(hist[i].ts).getTime();
           if (ts >= start) {
-            const k = toMinuteKey(new Date(ts));
+            const k = toMinuteIsoUTC(new Date(ts));
             const v = buckets.get(k);
             if (v) { v[label] += 1; buckets.set(k, v); }
           }
@@ -151,7 +154,7 @@ const Analytics: React.FC = () => {
       }
     };
     await Promise.all([agg(1, "A1"), agg(2, "A2")]);
-    setCpmSeries(keys.map((k) => ({ t: k, ...(buckets.get(k) ?? { A1: 0, A2: 0 }) })));
+    setCpmSeries(keys.map((k) => ({ minute: k, ...(buckets.get(k) ?? { A1: 0, A2: 0 }) })));
   }, []);
   useEffect(() => { loadCpm60(); const id = setInterval(loadCpm60, POLL_MS); return () => clearInterval(id); }, [loadCpm60]);
 
@@ -348,19 +351,34 @@ const Analytics: React.FC = () => {
                     ) : (
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart
-                          data={cpmSeries.map((r) => ({
-                            t: r.t,
-                            A1: r.A1,
-                            A2: r.A2,
-                            rtA1: aggA1.find((x) => x.minute.endsWith(r.t))?.runtime_s ?? null,
-                            rtA2: aggA2.find((x) => x.minute.endsWith(r.t))?.runtime_s ?? null,
-                          }))}
+                          data={(() => {
+                            // mapas de runtime por minuto ISO
+                            const rtA1Map = new Map(aggA1.map(x => [x.minute, x.runtime_s ?? null]));
+                            const rtA2Map = new Map(aggA2.map(x => [x.minute, x.runtime_s ?? null]));
+                            return cpmSeries.map((r) => ({
+                              minute: r.minute,
+                              A1: r.A1,
+                              A2: r.A2,
+                              rtA1: rtA1Map.get(r.minute) ?? null,
+                              rtA2: rtA2Map.get(r.minute) ?? null,
+                            }));
+                          })()}
                         >
                           <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="t" />
+                          <XAxis
+                            dataKey="minute"
+                            tickFormatter={(iso) =>
+                              new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                            }
+                          />
                           <YAxis yAxisId="left" />
                           <YAxis yAxisId="right" orientation="right" />
-                          <Tooltip content={<ChartTooltipContent />} />
+                          <Tooltip
+                            content={<ChartTooltipContent />}
+                            labelFormatter={(iso) =>
+                              new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                            }
+                          />
                           <Legend />
                           <Bar yAxisId="left" dataKey="A1" name="CPM A1" fill={C.A1} />
                           <Bar yAxisId="left" dataKey="A2" name="CPM A2" fill={C.A2} />

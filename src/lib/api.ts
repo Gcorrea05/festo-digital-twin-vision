@@ -69,7 +69,6 @@ async function fetchFirstOk<T>(candidates: Array<{ url: string; init?: RequestIn
   throw lastErr;
 }
 
-
 // ======================
 // Tipos (existentes)
 // ======================
@@ -214,7 +213,7 @@ function opcCandidatesByName(qs: string, name: string, since: string, limit: num
     { url: `/api/opc/history?${qs}` },
     { url: `/opc/history?${qs}` },
 
-    // POSTs equivalentes
+    // POSTs equivalentes (alguns ambientes retornam 405; fica como fallback)
     { url: `/api/opc/history/name`, init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
     { url: `/opc/history/name`,     init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
     { url: `/api/opc/by-name`,      init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
@@ -237,7 +236,7 @@ function opcCandidatesByFacet(qs: string, act: number, facet: "S1"|"S2", since: 
     { url: `/api/opc/history?${qs}` },
     { url: `/opc/history?${qs}` },
 
-    // POSTs
+    // POSTs (se o servidor permitir; caso contrário dá 405 e seguimos)
     { url: `/api/opc/history/facet`, init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
     { url: `/opc/history/facet`,     init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
     { url: `/api/opc/by-facet`,      init: { method: "POST", headers: { "Content-Type": "application/json" }, body } },
@@ -457,20 +456,35 @@ const takeArray = (payload: any) =>
   payload?.records ||
   [];
 
+// tenta várias formas de query aceitas pelo backend (act=A1 | act=1 | id=1 | actuator=1)
+// tenta várias formas de query aceitas pelo backend (SEM fallback vazio)
 async function tryMinuteAggMany(act: "A1" | "A2", since: string): Promise<MinuteAgg[]> {
   const id = act === "A1" ? "1" : "2";
-  const combos: Array<Record<string, string>> = [{ act }, { act: id }, { id }, { actuator: id }, {}];
+
+  // ordem: o que comprovadamente funciona primeiro
+  const combos: Array<Record<string, string>> = [
+    { actuator: id },  // ✅ já vimos 200 OK
+    { id },            // opcional (alguns backends aceitam)
+    { act: id },       // opcional (numérico)
+    // { act: act },    // REMOVIDO (A1/A2 string causa 4xx em alguns backends)
+    // {}               // REMOVIDO (gerava /metrics/minute-agg?since=... -> 400)
+  ];
+
   for (const a of combos) {
     const qs = new URLSearchParams({ ...a, since }).toString();
     const url = `/metrics/minute-agg?${qs}`;
     try {
       const raw = await fetchJson<any>(url);
-      const arr = takeArray(raw);
+      const arr =
+        (Array.isArray(raw) && raw) ||
+        raw?.data || raw?.items || raw?.rows || raw?.results || raw?.records || [];
       if (Array.isArray(arr) && arr.length) {
         const out = arr.map(normalizeMinuteAggRow).filter(Boolean) as MinuteAgg[];
         if (out.length) return out.sort((x, y) => x.minute.localeCompare(y.minute));
       }
-    } catch {}
+    } catch {
+      // tenta próximo formato
+    }
   }
   return [];
 }
@@ -1094,17 +1108,4 @@ export function openSlowWS(handlers: WSHandlers): WSHandle {
     fallbackIntervalMs: 60000,
     maxBackoffMs: 10000,
   });
-}
-const BASE = import.meta.env.VITE_API_BASE?.replace(/\/$/, "") || "";
-
-async function http<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${res.status} ${res.statusText} - ${text || "request failed"}`);
-  }
-  return (await res.json()) as T;
 }
