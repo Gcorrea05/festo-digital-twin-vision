@@ -1086,7 +1086,7 @@ export function openLiveWS(handlers: WSHandlers): WSHandle {
   return openWS("/ws/live", handlers, {
     manageVisibility: true,
     fallbackSnapshot: "live",
-    fallbackIntervalMs: 500, // antes: 200 — ajuste fino pra aliviar backend
+    fallbackIntervalMs: 200, // antes: 200 — ajuste fino pra aliviar backend
     maxBackoffMs: 10000,
   });
 }

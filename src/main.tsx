@@ -11,10 +11,4 @@ import "./index.css";
 const rootEl = document.getElementById("root")!;
 const root = ReactDOM.createRoot(rootEl);
 
-root.render(
-  <LiveProvider>
-    <ActuatorSelectionProvider>
-      <App />
-    </ActuatorSelectionProvider>
-  </LiveProvider>
-);
+root.render(<App />);
