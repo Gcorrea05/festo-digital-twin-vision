@@ -12,11 +12,15 @@ export type ThreeDModelProps = {
   paused?: boolean;
 };
 
-// Mais afastado no fit inicial
+/** ======= Constantes de câmera/fit ======= */
 const FIT_MULTIPLIER = 1.0;
 const INITIAL_DIR = new THREE.Vector3(1.6, 1.2, 1.8).normalize();
 const INITIAL_FOV = 20;
 const ANIM_MS = 180;
+
+// limites de zoom relativos à distância “de encaixe”
+const ZOOM_MIN_FACTOR = 0.85; // minDistance = fitDist * 0.85 (evita ficar *muito* perto)
+const ZOOM_MAX_FACTOR = 6.0;  // maxDistance = fitDist * 6
 
 function getModelUrl(which: 1 | 2) {
   try {
@@ -40,9 +44,14 @@ function applyFrontView(
   camera.position.set(center.x, center.y, center.z + fitDist * FIT_MULTIPLIER);
   controls.target.copy(center);
 
+  // só muda flags; não trava zoom, apenas ajusta limites
   controls.enableRotate = false;
   controls.enablePan = false;
   controls.enableZoom = true;
+
+  // limites de zoom (sem resetar posição)
+  controls.minDistance = fitDist * ZOOM_MIN_FACTOR;
+  controls.maxDistance = fitDist * ZOOM_MAX_FACTOR;
 
   controls.update();
   invalidate?.();
@@ -51,6 +60,7 @@ function applyFrontView(
 function applyFreeView(
   controls: any,
   center?: THREE.Vector3,
+  fitRadius?: number,
   invalidate?: () => void
 ) {
   if (center) controls.target.copy(center);
@@ -69,11 +79,20 @@ function applyFreeView(
   controls.rotateSpeed = 0.9;
   controls.zoomSpeed = 0.8;
 
+  // Respeita os mesmos limites de zoom do fit atual (se informado)
+  if (fitRadius && (controls.object as THREE.PerspectiveCamera)) {
+    const cam: THREE.PerspectiveCamera = controls.object;
+    const fov = (cam.fov ?? INITIAL_FOV) * (Math.PI / 180);
+    const fitDist = fitRadius / Math.sin(fov / 2);
+    controls.minDistance = fitDist * ZOOM_MIN_FACTOR;
+    controls.maxDistance = fitDist * ZOOM_MAX_FACTOR;
+  }
+
   controls.update();
   invalidate?.();
 }
 
-/** ========= Hooks R3F auxiliares (Canvas) ========= */
+/** ========= Hooks R3F auxiliares ========= */
 function InvalidateHandle({ fnRef }: { fnRef: React.MutableRefObject<(() => void) | null> }) {
   const { invalidate } = useThree();
   useEffect(() => {
@@ -83,9 +102,7 @@ function InvalidateHandle({ fnRef }: { fnRef: React.MutableRefObject<(() => void
   return null;
 }
 
-/** ========= AutoFit inicial =========
- * IMPORTANTE: não depender de `onFit` (função instável) para não refitar a cada render.
- */
+/** ========= AutoFit inicial ========= */
 function AutoFit({
   groupRef,
   onFit,
@@ -113,6 +130,8 @@ function AutoFit({
 
     const fov = (camera.fov ?? INITIAL_FOV) * (Math.PI / 180);
     const fitDist = radius / Math.sin(fov / 2);
+
+    // Posição inicial **fora** do modelo (seguindo uma direção oblíqua)
     camera.position.copy(
       center.clone().add(INITIAL_DIR.clone().multiplyScalar(fitDist * FIT_MULTIPLIER))
     );
@@ -120,13 +139,12 @@ function AutoFit({
     gl.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     onFit?.(center, radius);
     invalidate();
-    // ⬇️ NÃO incluir `onFit` aqui — manter o fit somente no mount
-  }, [camera, gl, groupRef, invalidate]);
+  }, [camera, gl, groupRef, invalidate, onFit]);
 
   return null;
 }
 
-/** ========= Prende o centro do GLB no mundo (remove “respiração”) ========= */
+/** ========= Centro “pinado” pra não respirar ========= */
 function CenterPin({
   groupRef,
   lockedCenterRef,
@@ -153,73 +171,6 @@ function CenterPin({
       g.position.x -= dx;
       g.position.y -= dy;
       g.position.z -= dz;
-    }
-  });
-
-  return null;
-}
-/** ========= Travar/destravar o ZOOM com distância calculada pelo FOV =========
- * Usa fitDist = radius / sin(fov/2) e aplica SAFE_MARGIN para garantir que
- * você não fique “dentro” do modelo quando a animação liga.
- * Move a câmera UMA VEZ (quando liga o lock), sem reposicionar mais depois.
- */
-const SAFE_MARGIN = 1.4; // aumente para 1.5–1.7 se ainda quiser mais afastado
-
-function LockOrbitZoom({
-  controlsRef,
-  enabledRef,
-  fitRadiusRef,
-}: {
-  controlsRef: React.RefObject<any>;
-  enabledRef: React.MutableRefObject<boolean>;
-  fitRadiusRef: React.MutableRefObject<number>;
-}) {
-  const appliedRef = useRef<"locked" | "unlocked" | null>(null);
-
-  useFrame(() => {
-    const c = controlsRef.current;
-    if (!c) return;
-
-    if (enabledRef.current) {
-      if (appliedRef.current !== "locked") {
-        const cam: THREE.PerspectiveCamera = c.object;
-        const t: THREE.Vector3 = c.target;
-
-        const radius = fitRadiusRef.current || 1;
-        const fovRad = (cam.fov ?? INITIAL_FOV) * (Math.PI / 180);
-        const fitDist = radius / Math.sin(fovRad / 2);
-        const desired = fitDist * SAFE_MARGIN;
-
-        // distância atual e distância "segura"
-        const cur = cam.position.distanceTo(t);
-        const safe = Math.max(cur, desired);
-
-        // se estiver perto demais, empurra UMA VEZ para fora
-        if (cur < safe) {
-          const dir = cam.position.clone().sub(t).normalize();
-          cam.position.copy(t.clone().add(dir.multiplyScalar(safe)));
-        }
-
-        // trava o zoom nessa distância segura
-        c.minDistance = safe;
-        c.maxDistance = safe;
-        c.enableZoom = false;
-        cam.updateMatrixWorld();
-        c.update();
-
-        appliedRef.current = "locked";
-      }
-    } else {
-      if (appliedRef.current !== "unlocked") {
-        // libera o zoom novamente com limites razoáveis baseados na distância atual
-        const cam: THREE.PerspectiveCamera = c.object;
-        const dist = cam.position.distanceTo(c.target);
-        c.enableZoom = true;
-        c.minDistance = Math.max(0.25, dist * 0.25);
-        c.maxDistance = Math.max(5, dist * 12);
-        c.update();
-        appliedRef.current = "unlocked";
-      }
     }
   });
 
@@ -272,7 +223,7 @@ function GLBActuator({
     if (mixer) mixer.timeScale = paused ? 0 : 1;
   }, [paused, mixer]);
 
-  // micro-translação de feedback – opcional, pode remover se quiser 100% estático
+  // micro-translação de feedback – opcional
   const { invalidate } = useThree();
   useEffect(() => {
     if (!groupRef.current) return;
@@ -305,19 +256,30 @@ function GLBActuator({
     </mesh>
   );
 }
+
 /** ======================= Principal ======================= */
 export default function ThreeDModel({ paused }: ThreeDModelProps) {
   const [modelIndex, setModelIndex] = useState<1 | 2>(1);
   const [viewMode, setViewMode] = useState<"free" | "front">("free");
   const [showCamera, setShowCamera] = useState(false);
 
-  // status do sistema (controla animação)
+  // status do sistema + hasStarted do atuador atual (controlam a animação)
   const { snapshot } = useLive();
+
+  // decide qual atuador está “ativo” (selecionado na UI ou o do tab)
+  const currentId: 1 | 2 | undefined =
+    (snapshot?.selectedActuator as 1 | 2 | undefined) ?? modelIndex;
+
+  const currentAct = snapshot?.actuators?.find((a) => a.id === currentId);
+  const hasStarted = Boolean(currentAct?.hasStarted);
+
   const isSystemOK =
     String(snapshot?.system?.status ?? "").trim().toLowerCase() === "ok";
-  const pausedFromStatus = !isSystemOK;
-  const pausedEffective = (paused ?? pausedFromStatus) || showCamera;
 
+  // Pausar se: (1) explicitamente via prop, OU (2) sistema não ok, OU (3) ainda não destravou (sem borda AV->RE), OU (4) câmera ligada
+  const pausedEffective = (paused ?? (!isSystemOK || !hasStarted)) || showCamera;
+
+  // pré-carrega GLB
   useEffect(() => {
     const url = getModelUrl(modelIndex);
     fetch(url).catch((e) =>
@@ -372,21 +334,15 @@ export default function ThreeDModel({ paused }: ThreeDModelProps) {
     return () => close();
   }, [showCamera]);
 
-  // Aplica restrições corretas ao trocar de modo
+  // Aplica restrições corretas ao trocar de modo (sem resetar zoom do usuário)
   useEffect(() => {
     const c = controlsRef.current;
     if (!c) return;
     const center = lastCenterRef.current ?? new THREE.Vector3(0, 0, 0);
     const radius = lastRadiusRef.current ?? 1;
     if (viewMode === "front") applyFrontView(c, center, radius, invalidateRef.current ?? undefined);
-    else applyFreeView(c, center, invalidateRef.current ?? undefined);
+    else applyFreeView(c, center, radius, invalidateRef.current ?? undefined);
   }, [viewMode]);
-
-  // flag: animação tocando ⇒ travar zoom
-  const zoomLockEnabledRef = useRef<boolean>(false);
-  useEffect(() => {
-    zoomLockEnabledRef.current = !pausedEffective;
-  }, [pausedEffective]);
 
   return (
     <div className="relative w-full rounded-2xl border border-white/10 bg-[#0a0f1a]/40 p-4">
@@ -445,7 +401,7 @@ export default function ThreeDModel({ paused }: ThreeDModelProps) {
                 <GLBActuator which={modelIndex} groupRef={groupRef} paused={pausedEffective} />
               </group>
 
-              {/* ⬇️ re-fit APENAS quando trocar de modelo */}
+              {/* re-fit apenas quando trocar de modelo */}
               <AutoFit
                 key={modelIndex}
                 groupRef={groupRef}
@@ -457,8 +413,16 @@ export default function ThreeDModel({ paused }: ThreeDModelProps) {
                   const c = controlsRef.current;
                   if (c) {
                     c.target.copy(center);
+                    // ajusta limites de zoom sem “puxar” a câmera
+                    const cam: THREE.PerspectiveCamera = c.object;
+                    const fov = (cam.fov ?? INITIAL_FOV) * (Math.PI / 180);
+                    const fitDist = radius / Math.sin(fov / 2);
+                    c.minDistance = fitDist * ZOOM_MIN_FACTOR;
+                    c.maxDistance = fitDist * ZOOM_MAX_FACTOR;
+                    c.update();
+
                     if (viewMode === "front") applyFrontView(c, center, radius, invalidateRef.current ?? undefined);
-                    else applyFreeView(c, center, invalidateRef.current ?? undefined);
+                    else applyFreeView(c, center, radius, invalidateRef.current ?? undefined);
                   }
                 }}
               />
@@ -466,19 +430,13 @@ export default function ThreeDModel({ paused }: ThreeDModelProps) {
               {/* Centro fixo para evitar “respiração” */}
               <CenterPin groupRef={groupRef} lockedCenterRef={lockedCenterRef} />
 
-              {/* Travar o zoom (distância calculada pelo FOV + margem) */}
-              <LockOrbitZoom
-                controlsRef={controlsRef}
-                enabledRef={zoomLockEnabledRef}
-                fitRadiusRef={lastRadiusRef}
-              />
-
               <OrbitControls
                 ref={controlsRef}
                 makeDefault
                 enableRotate={viewMode === "free"}
                 enableZoom
                 enablePan={false}
+                // botões padrão
                 mouseButtons={{
                   LEFT: THREE.MOUSE.ROTATE,
                   MIDDLE: THREE.MOUSE.DOLLY,

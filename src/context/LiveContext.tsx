@@ -28,9 +28,11 @@ export type ActuatorSnapshot = {
   id: number;
   ts: string; // instante (ISO) do último pacote aplicado
   state: StableState;
-  // campos opcionais futuros
+  // campos opcionais
   pending?: "AV" | "REC" | null;
   fault?: string | null;
+  // NOVO: vira true após a 1ª borda AVANÇADO->RECUADO (não volta a false)
+  hasStarted?: boolean;
 };
 
 export type Snapshot = {
@@ -86,6 +88,16 @@ export function LiveProvider({ children }: Props) {
   // guarda o "último tick" (serve para pacotes live **ou** heartbeats hb)
   const lastTickRef = useRef<number>(0);
 
+  // proteção a duplicatas/out-of-order (comparando timestamp do pacote)
+  const lastAppliedIsoRef = useRef<string | null>(null);
+  const lastAppliedMsRef = useRef<number>(0);
+
+  // estado anterior por atuador (pra detectar borda AV->RE)
+  const lastStateRef = useRef<Map<number, StableState>>(new Map());
+
+  // flag “destravou” por atuador (persiste até reload)
+  const hasStartedRef = useRef<Map<number, boolean>>(new Map());
+
   // guardamos WS da aba (pode ser o singleton)
   const wsRef = useRef<ReturnType<typeof openLiveWS> | null>(null);
   const guardTimerRef = useRef<number | null>(null);
@@ -102,7 +114,14 @@ export function LiveProvider({ children }: Props) {
       for (const a of prevList) map.set(a.id, a);
       // aplica novos (com ts do pacote)
       for (const a of incoming) {
-        map.set(a.id, { ...a, ts });
+        const prev = map.get(a.id);
+        map.set(a.id, {
+          ...(prev ?? {}),
+          ...a,
+          ts,
+          // preserva hasStarted=true se já estava marcado antes
+          hasStarted: (prev?.hasStarted || a.hasStarted) ? true : false,
+        } as ActuatorSnapshot);
       }
       const merged = Array.from(map.values()).sort((x, y) => x.id - y.id);
       return {
@@ -114,9 +133,19 @@ export function LiveProvider({ children }: Props) {
     });
   };
 
-  // aplica uma mensagem de /ws/live ao snapshot
+  // aplica uma mensagem de /ws/live ao snapshot, com proteção a duplicatas/out-of-order
   const applyLiveMessage = (msg: WSMessageLive) => {
     const ts = String(msg?.ts ?? new Date().toISOString());
+    const tsMs = Number.isFinite(Date.parse(ts)) ? Date.parse(ts) : Date.now();
+
+    // ignora se é igual ao último aplicado
+    if (lastAppliedIsoRef.current === ts) return;
+    // ignora out-of-order (mais antigo que o último aplicado)
+    if (tsMs <= lastAppliedMsRef.current) return;
+
+    lastAppliedIsoRef.current = ts;
+    lastAppliedMsRef.current = tsMs;
+
     const arr = Array.isArray(msg?.actuators) ? msg.actuators : [];
 
     const normalized: ActuatorSnapshot[] = arr
@@ -124,12 +153,30 @@ export function LiveProvider({ children }: Props) {
         const id = Number((a as any).id);
         if (!Number.isFinite(id)) return null;
         const state = ((a as any).state ?? "DESCONHECIDO") as StableState;
+
+        // --- detecção de borda AVANÇADO -> RECUADO (apenas 1ª vez liga o hasStarted) ---
+        const prevState = lastStateRef.current.get(id);
+        if (state && state !== "DESCONHECIDO") {
+          // atualiza memória do último estado
+          lastStateRef.current.set(id, state);
+        }
+        // borda: prev=AVANÇADO e agora = RECUADO
+        const firstEdge =
+          prevState === "AVANÇADO" && state === "RECUADO" && hasStartedRef.current.get(id) !== true;
+
+        if (firstEdge) {
+          hasStartedRef.current.set(id, true); // trava ligado até reload
+        }
+
+        const hasStarted = hasStartedRef.current.get(id) === true;
+
         return {
           id,
           ts,
           state,
           pending: (a as any).pending ?? null,
           fault: (a as any).fault ?? null,
+          hasStarted, // 💡 chave pra “não parar mais” depois da 1ª borda
         } as ActuatorSnapshot;
       })
       .filter(Boolean) as ActuatorSnapshot[];
@@ -211,9 +258,7 @@ export function LiveProvider({ children }: Props) {
       }
       // marca como degraded enquanto sem WS (playback ainda pode injetar snapshots)
       setSnapshot((prev) =>
-        prev
-          ? { ...prev, system: { status: "degraded", ts: Date.now() } }
-          : prev
+        prev ? { ...prev, system: { status: "degraded", ts: Date.now() } } : prev
       );
       return; // não abre WS
     }
@@ -246,16 +291,12 @@ export function LiveProvider({ children }: Props) {
         },
         onClose: () => {
           setSnapshot((prev) =>
-            prev
-              ? { ...prev, system: { status: "degraded", ts: Date.now() } }
-              : prev
+            prev ? { ...prev, system: { status: "degraded", ts: Date.now() } } : prev
           );
         },
         onError: () => {
           setSnapshot((prev) =>
-            prev
-              ? { ...prev, system: { status: "degraded", ts: Date.now() } }
-              : prev
+            prev ? { ...prev, system: { status: "degraded", ts: Date.now() } } : prev
           );
         },
       });
