@@ -51,7 +51,14 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
+      // ⬇️ força Vite/Rollup a usar a build ESM do hls.js
+      "hls.js": "hls.js/dist/hls.min.js",
     },
+  },
+
+  // Ajuda o otimizador de deps do Vite a pré-resolver hls.js
+  optimizeDeps: {
+    include: ["hls.js"],
   },
 
   server: {
@@ -64,7 +71,7 @@ export default defineConfig({
       "/mpu": mkProxy(false),
       "/ws": mkProxy(true),
 
-      // 🔽 Novo: aceita chamadas do front em /simulation/* e reescreve para /api/simulation/*
+      // 🔽 aceita chamadas do front em /simulation/* e reescreve para /api/simulation/*
       "/simulation": {
         ...mkProxy(false),
         rewrite: (path) => path.replace(/^\/simulation/, "/api/simulation"),

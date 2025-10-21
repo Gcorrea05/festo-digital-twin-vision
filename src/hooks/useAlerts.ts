@@ -30,21 +30,29 @@ let intervalId: number | null = null;
 let currentCfg: Config = { pollMs: 15000, limit: 5 };
 let inFlight = false;
 
-function emit() { for (const cb of subscribers) cb(); }
+// controle global de habilitação e callback atual
+let globallyEnabled = true;
+let lastOnNewAlert: ((a: AlertItem) => void) | undefined;
+
+function emit() {
+  for (const cb of subscribers) cb();
+}
 
 async function fetchOnce(cfg = currentCfg, onNewAlert?: (a: AlertItem) => void) {
-  if (inFlight) return;            // evita rajadas
+  if (inFlight) return; // evita rajadas
   inFlight = true;
   try {
     state = { ...state, loading: true };
     emit();
 
     const data = await getAlerts(cfg.limit);
-    const list = Array.isArray((data as any)?.items) ? ((data as any).items as AlertItem[]) : [];
+    const list = Array.isArray((data as any)?.items)
+      ? ((data as any).items as AlertItem[])
+      : [];
 
     // avisar só os novos
     for (const a of list) if (!knownIds.has(a.id)) onNewAlert?.(a);
-    knownIds = new Set(list.map(a => a.id));
+    knownIds = new Set(list.map((a) => a.id));
 
     state = { items: list, loading: false, error: null };
   } catch (e: any) {
@@ -57,17 +65,49 @@ async function fetchOnce(cfg = currentCfg, onNewAlert?: (a: AlertItem) => void) 
 
 function startPolling(cfg: Config, onNewAlert?: (a: AlertItem) => void) {
   currentCfg = cfg;
-  if (intervalId != null) return;  // já rodando
-  // primeira busca imediata
-  void fetchOnce(cfg, onNewAlert);
-  intervalId = window.setInterval(() => fetchOnce(currentCfg, onNewAlert), cfg.pollMs) as unknown as number;
+  lastOnNewAlert = onNewAlert ?? lastOnNewAlert;
+
+  // já tem intervalo ativo? mantém
+  if (intervalId != null) return;
+
+  // busca inicial
+  void fetchOnce(cfg, lastOnNewAlert);
+
+  intervalId = window.setInterval(
+    () => fetchOnce(currentCfg, lastOnNewAlert),
+    cfg.pollMs
+  ) as unknown as number;
 }
 
-function stopPolling() {
-  if (subscribers.size === 0 && intervalId != null) {
+function clearIntervalIfAny() {
+  if (intervalId != null) {
     window.clearInterval(intervalId);
     intervalId = null;
   }
+}
+
+/** Para quando não há mais inscritos OU quando desabilitado manualmente */
+function stopPolling() {
+  if (subscribers.size === 0) {
+    clearIntervalIfAny();
+  }
+}
+
+/* Pausa por visibilidade (sem mexer no "enabled" do usuário) */
+let visibilityHooked = false;
+function ensureVisibilityHook() {
+  if (visibilityHooked || typeof document === "undefined") return;
+  visibilityHooked = true;
+  document.addEventListener("visibilitychange", () => {
+    const hidden = document.visibilityState === "hidden";
+    if (hidden) {
+      // pausa temporária
+      clearIntervalIfAny();
+    } else {
+      // retoma se globalmente habilitado
+      if (globallyEnabled) startPolling(currentCfg, lastOnNewAlert);
+    }
+  });
 }
 
 /* =========================
@@ -79,11 +119,18 @@ export function useAlerts(opts?: UseAlertsOpts) {
   const enabled = opts?.enabled ?? true;
   const onNewAlert = opts?.onNewAlert;
 
+  ensureVisibilityHook();
+
   // assinatura do store
   const subscribe = (onStoreChange: () => void) => {
     subscribers.add(onStoreChange);
-    // start/pause
-    if (enabled) startPolling({ pollMs, limit }, onNewAlert);
+
+    // sincroniza preferências globais/habilitação
+    globallyEnabled = enabled;
+    if (enabled && document.visibilityState !== "hidden") {
+      startPolling({ pollMs, limit }, onNewAlert);
+    }
+
     return () => {
       subscribers.delete(onStoreChange);
       stopPolling();
@@ -101,34 +148,57 @@ export function useAlerts(opts?: UseAlertsOpts) {
   useEffect(() => {
     const prev = lastCfg.current;
     lastCfg.current = { pollMs, limit, enabled };
+
+    // guarda callback atualizado
+    lastOnNewAlert = onNewAlert ?? lastOnNewAlert;
+
     if (!prev) return;
 
     // habilitou
-    if (!prev.enabled && enabled) startPolling({ pollMs, limit }, onNewAlert);
-    // desabilitou
-    if (prev.enabled && !enabled) {
-      if (intervalId != null) {
-        window.clearInterval(intervalId);
-        intervalId = null;
+    if (!prev.enabled && enabled) {
+      globallyEnabled = true;
+      if (document.visibilityState !== "hidden") {
+        startPolling({ pollMs, limit }, onNewAlert);
       }
     }
-    // alterou cfg com polling ligado
+
+    // desabilitou
+    if (prev.enabled && !enabled) {
+      globallyEnabled = false;
+      clearIntervalIfAny();
+    }
+
+    // alterou cfg com polling ligado e aba visível
     if (enabled && (prev.pollMs !== pollMs || prev.limit !== limit)) {
-      if (intervalId != null) {
-        window.clearInterval(intervalId);
-        intervalId = null;
+      clearIntervalIfAny();
+      if (document.visibilityState !== "hidden") {
+        startPolling({ pollMs, limit }, onNewAlert);
       }
-      startPolling({ pollMs, limit }, onNewAlert);
     }
   }, [pollMs, limit, enabled, onNewAlert]);
 
   // refresh manual exposto
   const refresh = useMemo(
-    () => () => fetchOnce({ pollMs, limit }, onNewAlert),
-    [pollMs, limit, onNewAlert]
+    () => () => fetchOnce({ pollMs, limit }, lastOnNewAlert),
+    [pollMs, limit]
   );
 
-  return { ...snap, refresh };
+  // controle programático opcional (pra páginas que querem um toggle local)
+  const setPollingEnabled = useMemo(
+    () => (v: boolean) => {
+      globallyEnabled = v;
+      if (v) {
+        if (document.visibilityState !== "hidden") {
+          startPolling({ pollMs, limit }, lastOnNewAlert);
+        }
+      } else {
+        clearIntervalIfAny();
+      }
+    },
+    [pollMs, limit]
+  );
+
+  return { ...snap, refresh, setPollingEnabled };
 }
 
 /* =========================
