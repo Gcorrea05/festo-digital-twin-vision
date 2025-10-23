@@ -18,6 +18,9 @@ import Alerts from "@/pages/Alerts";
 import Simulation from "@/pages/Simulation";
 import NotFound from "@/pages/NotFound";
 
+// ⬇️ NOVO: popup global que ouve eventos emitGlobalAlert(...)
+import GlobalAlertPopup from "@/components/GlobalAlertPopup";
+
 const queryClient = new QueryClient();
 
 const App = () => (
@@ -25,12 +28,10 @@ const App = () => (
     <AuthProvider>
       <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
         <TooltipProvider delayDuration={250}>
-          {/* --- Providers globais para snapshot e atuador --- */}
           <LiveProvider>
             <ActuatorSelectionProvider>
               <BrowserRouter>
                 <Routes>
-                  {/* Cada rota usa o seu Layout (que renderiza Header + Sidebar + children) */}
                   <Route
                     path="/"
                     element={
@@ -71,7 +72,6 @@ const App = () => (
                       </Layout>
                     }
                   />
-                  {/* 404 ainda mantém a Sidebar, pois usa o mesmo Layout */}
                   <Route
                     path="*"
                     element={
@@ -82,6 +82,9 @@ const App = () => (
                   />
                 </Routes>
               </BrowserRouter>
+
+              {/* ⬇️ monta UMA vez: o Dialog é em Portal, cobre o site todo */}
+              <GlobalAlertPopup />
             </ActuatorSelectionProvider>
           </LiveProvider>
 

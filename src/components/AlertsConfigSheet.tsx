@@ -3,12 +3,6 @@ import { Settings2 } from "lucide-react";
 import { useAlertsCfg } from "@/store/alertsConfig";
 import type { AlertsConfig } from "@/lib/api";
 
-// Se você usar shadcn/ui, descomente estes imports e troque os wrappers base:
-// import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger, SheetFooter } from "@/components/ui/sheet";
-// import { Button } from "@/components/ui/button";
-// import { Input } from "@/components/ui/input";
-// import { Label } from "@/components/ui/label";
-
 type Props = { className?: string };
 
 export default function AlertsConfigSheet({ className }: Props) {
@@ -19,7 +13,7 @@ export default function AlertsConfigSheet({ className }: Props) {
   const dirty = useMemo(() => JSON.stringify(cfg) !== JSON.stringify(local), [cfg, local]);
 
   useEffect(() => {
-    if (!cfg && open) load();
+    if (open && !cfg) void load();
   }, [open, cfg, load]);
 
   useEffect(() => {
@@ -34,7 +28,6 @@ export default function AlertsConfigSheet({ className }: Props) {
     if (next) setOpen(false);
   };
 
-  // wrappers simples (sem shadcn). Troque por Sheet/Button/Input se quiser.
   return (
     <div className={className}>
       <button
@@ -51,58 +44,58 @@ export default function AlertsConfigSheet({ className }: Props) {
           <div className="absolute inset-0 bg-black/30" onClick={() => setOpen(false)} />
           <div className="absolute right-0 top-0 h-full w-full max-w-xl bg-white dark:bg-zinc-900 shadow-2xl p-5 overflow-auto">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold">Parâmetros de Alertas</h2>
-              <button onClick={() => setOpen(false)} className="text-sm opacity-70 hover:opacity-100">Fechar</button>
+              <h2 className="text-2xl font-bold">Parâmetros de Alertas</h2>
+              <button onClick={() => setOpen(false)} className="text-base opacity-70 hover:opacity-100">Fechar</button>
             </div>
 
             {!local || loading ? (
               <div>Carregando…</div>
             ) : (
-              <div className="space-y-5">
-                <Field label="Vibration overall threshold">
+              <div className="space-y-6 text-[18px]">
+                <Field label="Limite de vibração (overall)" hint="Valor máximo da vibração geral (magnitude). Acima disso, gera alerta.">
                   <NumberInput value={local.vibration_overall_threshold}
                     onChange={(v)=> setLocal({ ...local, vibration_overall_threshold: v })} />
                 </Field>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <Field label="VIB green">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <Field label="Vibração (verde)" hint="Até esse valor a vibração é considerada OK (verde).">
                     <NumberInput value={local.vib_green}
                       onChange={(v)=> setLocal({ ...local, vib_green: v })} />
                   </Field>
-                  <Field label="VIB amber">
+                  <Field label="Vibração (âmbar)" hint="Faixa de atenção (amarelo). Acima do verde e abaixo do threshold final.">
                     <NumberInput value={local.vib_amber}
                       onChange={(v)=> setLocal({ ...local, vib_amber: v })} />
                   </Field>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <Field label="CPM green">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <Field label="CPM (verde)" hint="Meta de produção (ciclos por minuto) para ficar verde.">
                     <NumberInput value={local.cpm_green}
                       onChange={(v)=> setLocal({ ...local, cpm_green: v })} />
                   </Field>
-                  <Field label="CPM amber">
+                  <Field label="CPM (âmbar)" hint="Produção mínima aceitável (amarelo). Abaixo disso pode virar vermelho.">
                     <NumberInput value={local.cpm_amber}
                       onChange={(v)=> setLocal({ ...local, cpm_amber: v })} />
                   </Field>
                 </div>
 
-                <div className="grid grid-cols-3 gap-4">
-                  <Field label="Latch timeout factor">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <Field label="Fator de timeout (×)" hint="Multiplica o tempo esperado. Ex.: 1,5 = 150%. Se exceder, alerta de TIMEOUT.">
                     <NumberInput value={local.latch_timeout_factor}
                       onChange={(v)=> setLocal({ ...local, latch_timeout_factor: v })} />
                   </Field>
-                  <Field label="Expected A1 (ms)">
+                  <Field label="Tempo esperado A1 (ms)" hint="Tempo de transição esperado do atuador A1 (ms).">
                     <NumberInput value={local.expected_ms_A1 ?? 0}
                       onChange={(v)=> setLocal({ ...local, expected_ms_A1: v || null })} />
                   </Field>
-                  <Field label="Expected A2 (ms)">
+                  <Field label="Tempo esperado A2 (ms)" hint="Tempo de transição esperado do atuador A2 (ms).">
                     <NumberInput value={local.expected_ms_A2 ?? 0}
                       onChange={(v)=> setLocal({ ...local, expected_ms_A2: v || null })} />
                   </Field>
                 </div>
 
-                <div className="text-xs opacity-70">
-                  Última atualização: {local.updated_at ?? "—"}
+                <div className="text-sm opacity-80">
+                  Atualizado em: {local.updated_at ?? "—"}
                 </div>
 
                 <div className="flex items-center gap-3">
@@ -130,12 +123,13 @@ export default function AlertsConfigSheet({ className }: Props) {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <div className="text-xs uppercase tracking-wide mb-1 opacity-70">{label}</div>
+      <div className="text-lg font-semibold mb-2">{label}</div>
       {children}
-      <style>{`.input{width:100%;border:1px solid rgba(0,0,0,.12);border-radius:.75rem;padding:.5rem .75rem;background:transparent}`}</style>
+      {hint && <div className="mt-2 text-base opacity-80 leading-snug">{hint}</div>}
+      <style>{`.input{width:100%;border:1px solid rgba(255,255,255,.15);border-radius:.9rem;padding:.7rem .9rem;background:#0b1220;color:#fff;}`}</style>
     </label>
   );
 }

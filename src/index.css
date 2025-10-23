@@ -43,7 +43,7 @@
     --sidebar-accent-foreground: 0 0% 98%;
     --sidebar-border: 220 16% 22%;
     --sidebar-ring: 196 80% 49%;
-    --sidebar-width: 18rem; /* 🔸 mais larga */
+    --sidebar-width: 19rem; /* 🔸 um pouco mais larga */
   }
 
   .dark {
@@ -83,7 +83,7 @@
     --sidebar-accent-foreground: 210 40% 98%;
     --sidebar-border: 222 47% 12%;
     --sidebar-ring: 196 80% 49%;
-    --sidebar-width: 18rem; /* 🔸 mais larga */
+    --sidebar-width: 19rem;
   }
 }
 
@@ -91,7 +91,7 @@
   * { @apply border-border; }
 
   body {
-    /* Padrão moderado (maior que original, menor que a versão anterior) */
+    /* Padrão moderado (maior que original, menor que a versão “gigante”) */
     @apply bg-background text-foreground text-[16px] md:text-[17px] lg:text-[18px];
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
@@ -102,13 +102,46 @@
   h1 { @apply text-2xl md:text-3xl lg:text-4xl font-extrabold tracking-wide; }
   h2 { @apply text-xl md:text-2xl lg:text-3xl font-bold tracking-wide; }
   h3 { @apply text-lg md:text-xl lg:text-2xl font-bold tracking-wide; }
+
+  /* SUBTÍTULOS AUTOMÁTICOS logo após o título da página */
+  /* Ex.: <h1>Dashboard</h1><p>Visão resumida...</p> */
+  main h1 + p,
+  section h1 + p {
+    @apply text-lg md:text-xl lg:text-2xl text-slate-300 leading-snug mt-1;
+  }
+  /* Também melhora subtítulos de seções secundárias (h2) */
+  main h2 + p,
+  section h2 + p {
+    @apply text-base md:text-lg lg:text-xl text-slate-400 mt-1;
+  }
+
+  /* Utilitário opcional para subtítulos explícitos */
+  .page-subtitle { @apply text-lg md:text-xl lg:text-2xl text-slate-300 leading-snug; }
 }
 
-/* Sidebar (shadcn/ui usa var --sidebar-width) */
+/* ===== Sidebar (shadcn/ui costuma usar data-sidebar="sidebar") ===== */
 [data-sidebar="sidebar"] { width: var(--sidebar-width); }
+
+/* Fonte maior na área de conteúdo da barra */
 [data-sidebar="sidebar"] .sidebar-content,
 .sidebar .sidebar-content {
-  @apply text-base md:text-lg; /* textos da barra um pouco maiores */
+  @apply text-lg md:text-xl;
+}
+
+/* Links/botões do menu (tamanho e espaçamento maiores) */
+[data-sidebar="sidebar"] .sidebar-content nav a,
+[data-sidebar="sidebar"] .sidebar-content nav button {
+  @apply text-lg md:text-xl py-2.5 px-3 rounded-xl;
+}
+
+/* Ícones maiores no menu */
+[data-sidebar="sidebar"] .sidebar-content nav svg {
+  @apply h-5 w-5 md:h-6 md:w-6;
+}
+
+/* Rótulos de grupos/“MENU” mais legíveis */
+[data-sidebar="sidebar"] .sidebar-content .text-xs {
+  @apply text-sm md:text-base tracking-wide;
 }
 
 /* Status dots */

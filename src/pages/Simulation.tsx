@@ -1,4 +1,3 @@
-// src/pages/Simulation.tsx
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import ThreeDModel from "@/components/dashboard/ThreeDModel";
 import { fetchJson, postJson } from "@/lib/api";
@@ -120,23 +119,18 @@ export default function Simulation() {
     setLoading(true);
 
     try {
-      // dispara em paralelo: request + timer 3–5s
       const req = postJson<Scenario>("/api/simulation/draw", { mode: "by_code", code: selectedCode });
       const wait = delay3to5s();
-
-      const j = await req; // aguarda backend
-      await wait; // e garante o atraso
+      const j = await req;       // aguarda backend
+      await wait;                // garante o atraso
 
       if (!alive.current) return;
 
-      console.log("[SIM] scenario:", j?.scenario_id, "code:", j?.error?.code);
-
       setScenario(j);
 
-      // pausar sempre que o pop-up aparecer; se não houver pop-up, respeita halt_3d
       if (j?.ui?.show_popup !== false) {
         setOpenDlg(true);
-        setPaused3D(true); // pausa junto com o pop-up
+        setPaused3D(true);       // pausa junto com o pop-up
       } else if (j?.ui?.halt_3d) {
         setPaused3D(true);
       }
@@ -151,7 +145,7 @@ export default function Simulation() {
   const sevBadge =
     scenario?.error?.severity != null && (
       <span
-        className={`text-white text-xs px-2 py-1 rounded ${
+        className={`text-white text-sm md:text-base px-2.5 py-1 rounded ${
           (scenario!.error.severity! >= 4 && "bg-red-600") ||
           (scenario!.error.severity === 3 && "bg-amber-500") ||
           "bg-emerald-600"
@@ -162,144 +156,157 @@ export default function Simulation() {
     );
 
   return (
-    <section className="space-y-4 p-6">
-      {/* Título padrão moderado vem de index.css (h1) */}
-      <h1>Simulation</h1>
+    <main className="flex-1 overflow-y-auto">
+      <div className="mx-auto w-full max-w-screen-2xl px-6 md:px-8 pb-12">
+        {/* Título + Subtítulo padronizados */}
+        <header className="mb-6">
+          <h1>Simulation</h1>
+          <p className="page-subtitle">Execute cenários de falha e visualize o efeito no modelo 3D.</p>
+        </header>
 
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle>Modelo</CardTitle>
-        </CardHeader>
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle>Modelo</CardTitle>
+          </CardHeader>
 
-        <CardContent className="space-y-4">
-          {/* RESET controlado pela key */}
-          <div className="rounded-2xl border border-slate-800 bg-slate-950 p-4">
-            <ThreeDModel key={modelKey} paused={paused3D} />
-          </div>
-
-          {/* Linha de seleção + ação (tamanhos moderados) */}
-          <div className="flex items-center gap-4 flex-wrap">
-            <label className="text-base md:text-lg font-semibold tracking-wide text-slate-300">
-              Tipo de erro:
-            </label>
-
-            <div className="flex flex-col">
-              <select
-                className="rounded-xl px-3.5 py-2 text-base min-w-72 text-white bg-slate-900/70 border border-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500"
-                value={selectedCode}
-                onChange={(e) => {
-                  setSelectedCode(e.target.value);
-                  setScenario(null);
-                  setPaused3D(true); // volta pausado
-                  setModelKey((k) => k + 1); // RESET: retorna à pose inicial
-                }}
-              >
-                <option value="" disabled>
-                  {catLoading
-                    ? "Carregando cenários..."
-                    : catError
-                    ? "Falha ao carregar"
-                    : "Selecione um cenário"}
-                </option>
-
-                {Object.entries(grouped).map(([grp, entries]) => (
-                  <optgroup key={grp} label={grp}>
-                    {entries.map(({ code, items }) => (
-                      <option key={code} value={code} title={items.map((x) => x.label).join(" | ")}>
-                        {(FRIENDLY[code] || items[0]?.name || code)} ({code})
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-
-              {catError && (
-                <div className="mt-1 text-xs text-amber-300">
-                  Falha ao carregar do servidor — usando lista local.{" "}
-                  <button className="underline" onClick={() => void loadCatalog()}>
-                    Tentar novamente
-                  </button>
-                </div>
-              )}
+          <CardContent className="space-y-4">
+            {/* RESET controlado pela key */}
+            <div className="rounded-2xl border border-slate-800 bg-slate-950 p-4">
+              <ThreeDModel key={modelKey} paused={paused3D} />
             </div>
 
-            <Button className="px-4 py-2 text-base rounded-xl" onClick={handleSimulate} disabled={loading || !selectedCode}>
-              {loading ? "Gerando..." : "Simular"}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+            {/* Linha de seleção + ação */}
+            <div className="flex items-center gap-4 flex-wrap">
+              <label className="text-lg md:text-xl font-semibold tracking-wide text-slate-100">
+                Tipo de erro:
+              </label>
 
-      {/* POP-UP padronizado */}
-      <Dialog open={openDlg} onOpenChange={setOpenDlg}>
-        <DialogContent className="sm:max-w-lg bg-slate-900 text-slate-100 border border-slate-700">
-          {scenario && (
-            <>
-              <DialogHeader className="space-y-1">
-                <DialogTitle className="flex items-center gap-2 text-lg">
-                  {scenario.error.name}
-                  {sevBadge}
-                </DialogTitle>
-                <DialogDescription className="text-slate-300">
-                  Causa: {scenario.cause}
-                </DialogDescription>
-              </DialogHeader>
-
-              <div className="pt-1">
-                <div className="text-sm font-semibold mb-2">Ações sugeridas:</div>
-                <ul className="list-disc ml-4 space-y-1">
-                  {scenario.actions.map((a, i) => (
-                    <li key={i}>{a}</li>
-                  ))}
-                </ul>
-              </div>
-
-              <div className="flex gap-3 mt-6 justify-end">
-                <Button
-                  variant="secondary"
-                  onClick={() => {
-                    // Reconhecer => PAUSA, fecha popup e RESET 3D à pose inicial
-                    setPaused3D(true);
-                    setOpenDlg(false);
+              <div className="flex flex-col">
+                <select
+                  className={[
+                    // ⬆️ fonte ainda maior + contraste
+                    "rounded-xl px-4 py-2.5 text-lg min-w-80",
+                    "bg-slate-800 text-slate-100 placeholder-slate-400",
+                    "border border-sky-500/80 shadow focus:outline-none focus:ring-2 focus:ring-sky-400 focus:border-sky-400",
+                    // força dark nos menus nativos
+                    "[color-scheme:dark]"
+                  ].join(" ")}
+                  value={selectedCode}
+                  onChange={(e) => {
+                    setSelectedCode(e.target.value);
                     setScenario(null);
-                    setModelKey((k) => k + 1); // RESET
-                    alert("Erro reconhecido (ACK).");
+                    setPaused3D(true); // volta pausado
+                    setModelKey((k) => k + 1); // RESET: retorna à pose inicial
                   }}
                 >
-                  Reconhecer
-                </Button>
+                  <option value="" disabled>
+                    {catLoading
+                      ? "Carregando cenários..."
+                      : catError
+                      ? "Falha ao carregar"
+                      : "Selecione um cenário"}
+                  </option>
 
-                {scenario.resume_allowed ? (
-                  <Button
-                    onClick={() => {
-                      // Retomar (mantém sua função atual)
-                      setScenario(null);
-                      setPaused3D(true); // você pediu para pausar no retomar
-                      setOpenDlg(false);
-                      setModelKey((k) => k + 1); // RESET também é útil aqui
-                    }}
-                  >
-                    Retomar
-                  </Button>
-                ) : (
-                  <Button
-                    variant="destructive"
-                    onClick={() => {
-                      // Encerrar => PAUSA e RESET
-                      setScenario(null);
-                      setPaused3D(true);
-                      setOpenDlg(false);
-                      setModelKey((k) => k + 1); // RESET
-                    }}
-                  >
-                    Encerrar simulação
-                  </Button>
+                  {Object.entries(grouped).map(([grp, entries]) => (
+                    <optgroup key={grp} label={grp}>
+                      {entries.map(({ code, items }) => (
+                        <option key={code} value={code} title={items.map((x) => x.label).join(" | ")}>
+                          {(FRIENDLY[code] || items[0]?.name || code)} ({code})
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+
+                {catError && (
+                  <div className="mt-1 text-base text-amber-300">
+                    Falha ao carregar do servidor — usando lista local.{" "}
+                    <button className="underline" onClick={() => void loadCatalog()}>
+                      Tentar novamente
+                    </button>
+                  </div>
                 )}
               </div>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
-    </section>
+
+              <Button
+                className="px-5 py-2.5 text-lg rounded-xl"
+                onClick={handleSimulate}
+                disabled={loading || !selectedCode}
+              >
+                {loading ? "Gerando..." : "Simular"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* POP-UP padronizado */}
+        <Dialog open={openDlg} onOpenChange={setOpenDlg}>
+          <DialogContent className="sm:max-w-lg bg-slate-900 text-slate-100 border border-slate-700">
+            {scenario && (
+              <>
+                <DialogHeader className="space-y-1">
+                  <DialogTitle className="flex items-center gap-2 text-xl md:text-2xl">
+                    {scenario.error.name}
+                    {sevBadge}
+                  </DialogTitle>
+                  <DialogDescription className="text-slate-300 text-base">
+                    Causa: {scenario.cause}
+                  </DialogDescription>
+                </DialogHeader>
+
+                <div className="pt-1">
+                  <div className="text-base font-semibold mb-2">Ações sugeridas:</div>
+                  <ul className="list-disc ml-4 space-y-1 text-base">
+                    {scenario.actions.map((a, i) => (
+                      <li key={i}>{a}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="flex gap-3 mt-6 justify-end">
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      setPaused3D(true);
+                      setOpenDlg(false);
+                      setScenario(null);
+                      setModelKey((k) => k + 1); // RESET
+                      alert("Erro reconhecido (ACK).");
+                    }}
+                  >
+                    Reconhecer
+                  </Button>
+
+                  {scenario.resume_allowed ? (
+                    <Button
+                      onClick={() => {
+                        setScenario(null);
+                        setPaused3D(true);
+                        setOpenDlg(false);
+                        setModelKey((k) => k + 1); // RESET
+                      }}
+                    >
+                      Retomar
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="destructive"
+                      onClick={() => {
+                        setScenario(null);
+                        setPaused3D(true);
+                        setOpenDlg(false);
+                        setModelKey((k) => k + 1); // RESET
+                      }}
+                    >
+                      Encerrar simulação
+                    </Button>
+                  )}
+                </div>
+              </>
+            )}
+          </DialogContent>
+        </Dialog>
+      </div>
+    </main>
   );
 }

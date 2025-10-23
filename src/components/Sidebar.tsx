@@ -1,4 +1,3 @@
-// src/components/Sidebar.tsx  (parte 1/2)
 import React from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { Gauge, Camera, BarChart2, AlertCircle, Cpu } from "lucide-react";
@@ -26,7 +25,7 @@ const navItems: NavItem[] = [
 
 function linkClasses(active: boolean) {
   return [
-    "flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors",
+    "flex items-center gap-3 rounded-xl px-3.5 py-2 text-base md:text-lg transition-colors",
     active
       ? "bg-accent text-accent-foreground"
       : "text-muted-foreground hover:text-foreground hover:bg-muted/40",
@@ -36,15 +35,15 @@ function linkClasses(active: boolean) {
 function NavList() {
   const { pathname } = useLocation();
   return (
-    <nav className="p-3">
-      <div className="mb-4 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+    <nav className="p-4 sidebar-content">
+      <div className="mb-4 px-3 py-2 text-sm md:text-base font-semibold uppercase tracking-wide text-muted-foreground">
         Menu
       </div>
       <ul className="space-y-1">
         {navItems.map(({ name, to, icon: Icon }) => (
           <li key={to}>
             <NavLink to={to} className={() => linkClasses(pathname === to)}>
-              <Icon className="h-4 w-4" />
+              <Icon className="h-5 w-5 md:h-6 md:w-6" />
               <span>{name}</span>
             </NavLink>
           </li>
@@ -53,7 +52,7 @@ function NavList() {
     </nav>
   );
 }
-// src/components/Sidebar.tsx  (parte 2/2)
+
 export default function Sidebar({ isOpen, onClose }: SidebarProps) {
   return (
     <>
@@ -67,10 +66,11 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
         aria-hidden="true"
       />
 
-      {/* Drawer mobile (fora do fluxo) */}
+      {/* Drawer mobile */}
       <aside
+        data-sidebar="sidebar"
         className={[
-          "fixed inset-y-0 left-0 z-50 w-64 border-r bg-background md:hidden",
+          "fixed inset-y-0 left-0 z-50 w-[var(--sidebar-width)] border-r bg-background md:hidden",
           "transform transition-transform duration-200 ease-out",
           isOpen ? "translate-x-0" : "-translate-x-full",
         ].join(" ")}
@@ -82,8 +82,11 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
         </div>
       </aside>
 
-      {/* ✅ Sidebar fixa no desktop, SEM wrapper em fluxo */}
-      <aside className="hidden md:block fixed left-0 top-16 bottom-0 w-64 border-r bg-background z-40">
+      {/* Sidebar fixa no desktop */}
+      <aside
+        data-sidebar="sidebar"
+        className="hidden md:block fixed left-0 top-16 bottom-0 w-[var(--sidebar-width)] border-r bg-background z-40"
+      >
         {/* Se o Header tiver outra altura, ajuste top-16 (ex.: top-14/top-20) */}
         <div className="h-full overflow-y-auto">
           <NavList />
