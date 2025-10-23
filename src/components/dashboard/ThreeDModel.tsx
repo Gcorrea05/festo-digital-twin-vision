@@ -118,30 +118,41 @@ function AutoFit({
 
     const box = new THREE.Box3().setFromObject(obj);
     const center = new THREE.Vector3();
-    const size = new THREE.Vector3();
-    box.getCenter(center);
-    box.getSize(size);
-    const radius = Math.max(size.x, size.y, size.z) * 0.5 || 1;
-
-    camera.near = Math.max(0.01, radius / 50);
-    camera.far = radius * 100;
-    camera.fov = INITIAL_FOV;
-    camera.updateProjectionMatrix();
-
-    const fov = (camera.fov ?? INITIAL_FOV) * (Math.PI / 180);
-    const fitDist = radius / Math.sin(fov / 2);
-
-    // Posição inicial **fora** do modelo (seguindo uma direção oblíqua)
-    camera.position.copy(
-      center.clone().add(INITIAL_DIR.clone().multiplyScalar(fitDist * FIT_MULTIPLIER))
-    );
-
-    gl.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    onFit?.(center, radius);
-    invalidate();
+    theBoxGetSize(box, center, camera, gl, onFit, invalidate);
   }, [camera, gl, groupRef, invalidate, onFit]);
 
   return null;
+}
+
+function theBoxGetSize(
+  box: THREE.Box3,
+  center: THREE.Vector3,
+  camera: THREE.PerspectiveCamera,
+  gl: THREE.WebGLRenderer,
+  onFit?: (center: THREE.Vector3, radius: number) => void,
+  invalidate?: () => void
+) {
+  const size = new THREE.Vector3();
+  box.getCenter(center);
+  box.getSize(size);
+  const radius = Math.max(size.x, size.y, size.z) * 0.5 || 1;
+
+  camera.near = Math.max(0.01, radius / 50);
+  camera.far = radius * 100;
+  camera.fov = INITIAL_FOV;
+  camera.updateProjectionMatrix();
+
+  const fov = (camera.fov ?? INITIAL_FOV) * (Math.PI / 180);
+  const fitDist = radius / Math.sin(fov / 2);
+
+  // Posição inicial **fora** do modelo (seguindo uma direção oblíqua)
+  camera.position.copy(
+    center.clone().add(INITIAL_DIR.clone().multiplyScalar(fitDist * FIT_MULTIPLIER))
+  );
+
+  gl.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  onFit?.(center, radius);
+  invalidate?.();
 }
 
 /** ========= Centro “pinado” pra não respirar ========= */
@@ -315,8 +326,8 @@ export default function ThreeDModel({ paused }: ThreeDModelProps) {
         });
         camStreamRef.current = stream;
         if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play().catch(() => {});
+          (videoRef.current as HTMLVideoElement).srcObject = stream;
+          await (videoRef.current as HTMLVideoElement).play().catch(() => {});
         }
       } catch (err) {
         console.warn("[3D] Erro ao acessar webcam:", err);
@@ -326,7 +337,7 @@ export default function ThreeDModel({ paused }: ThreeDModelProps) {
     const close = () => {
       camStreamRef.current?.getTracks().forEach((t) => t.stop());
       camStreamRef.current = null;
-      if (videoRef.current) videoRef.current.srcObject = null;
+      if (videoRef.current) (videoRef.current as HTMLVideoElement).srcObject = null;
     };
 
     if (showCamera) open();
@@ -447,43 +458,51 @@ export default function ThreeDModel({ paused }: ThreeDModelProps) {
           </Canvas>
         )}
 
-        {/* Bottom control bar */}
-        <div className="absolute left-4 bottom-4 flex items-center gap-3">
+        {/* Bottom control bar — PADRÃO MODERADO */}
+        <div className="sim-toolbar absolute left-4 bottom-4 flex items-center gap-3">
           <button
             onClick={() => setViewMode("free")}
-            className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm border ${
-              viewMode === "free"
-                ? "bg-white/10 text-white border-white/20"
-                : "bg-black/40 text-white/80 border-white/10 hover:text-white"
-            }`}
+            className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-base border transition
+              ${
+                viewMode === "free"
+                  ? "bg-white/10 text-white border-white/20"
+                  : "bg-slate-800/60 text-slate-200 border-slate-700 hover:bg-slate-800"
+              }`}
             disabled={showCamera}
           >
-            <Compass size={14} /> Free View
+            <Compass size={16} /> Free View
           </button>
 
-          <button
-            onClick={() => setViewMode("front")}
-            className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm border ${
-              viewMode === "front"
-                ? "bg-white/10 text-white border-white/20"
-                : "bg-black/40 text-white/80 border-white/10 hover:text-white"
-            }`}
-            disabled={showCamera}
+          <label
+            className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-base border transition
+              ${
+                viewMode === "front"
+                  ? "bg-white/10 text-white border-white/20"
+                  : "bg-slate-800/60 text-slate-200 border-slate-700 hover:bg-slate-800"
+              }`}
           >
-            <Square size={14} /> Front View
-          </button>
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-cyan-500"
+              checked={viewMode === "front"}
+              onChange={() => setViewMode((m) => (m === "front" ? "free" : "front"))}
+              disabled={showCamera}
+            />
+            <Square size={16} /> Front View
+          </label>
 
           <span className="text-white/40 select-none">•</span>
 
           <button
             onClick={() => setShowCamera((v) => !v)}
-            className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm border transition ${
-              showCamera
-                ? "bg-emerald-700 text-white border-emerald-600"
-                : "bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500"
-            }`}
+            className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-base border transition
+              ${
+                showCamera
+                  ? "bg-emerald-700 text-white border-emerald-600"
+                  : "bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500"
+              }`}
           >
-            <Video size={14} /> Live
+            <Video size={16} /> Live
           </button>
         </div>
       </div>

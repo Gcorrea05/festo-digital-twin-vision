@@ -1,49 +1,17 @@
 // src/components/dashboard/LiveMetrics.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { useLive } from "@/context/LiveContext";
 import { useActuatorSelection } from "@/context/ActuatorSelectionContext";
 
-/** ms -> "Xd HH:MM:SS" ou "HH:MM:SS" */
-function formatDuration(ms?: number) {
-  if (!Number.isFinite(ms as number) || (ms as number) < 0) return "—";
-  const totalSec = Math.floor((ms as number) / 1000);
-  const d = Math.floor(totalSec / 86400);
-  const h = Math.floor((totalSec % 86400) / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  const hh = String(h).padStart(2, "0");
-  const mm = String(m).padStart(2, "0");
-  const ss = String(s).padStart(2, "0");
-  return d > 0 ? `${d}d ${hh}:${mm}:${ss}` : `${hh}:${mm}:${ss}`;
-}
-
-function toMillis(v: unknown): number | undefined {
-  if (v == null) return undefined;
-  if (typeof v === "number" && Number.isFinite(v)) {
-    return v < 1e12 ? Math.round(v * 1000) : v; // segundos → ms
-  }
-  if (typeof v === "string") {
-    const iso = Date.parse(v);
-    if (!Number.isNaN(iso)) return iso;
-    const n = Number(v);
-    if (Number.isFinite(n)) return n < 1e12 ? Math.round(n * 1000) : n;
-  }
-  return undefined;
-}
+type StableState = "RECUADO" | "AVANÇADO" | "DESCONHECIDO";
 
 const LiveMetrics: React.FC = () => {
   const { snapshot } = useLive();
-  const { selectedId } = useActuatorSelection(); // ⬅️ vem do botão Modelo 1/2
+  const { selectedId } = useActuatorSelection(); // “Modelo 1/2”
 
-  // ticker local p/ atualizar o “runtime” em tempo real
-  const [nowMs, setNowMs] = useState<number>(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  // Status do sistema
+  // ===== System status (moderado) =====
   const systemText = useMemo<"OK" | "DEGRADED" | "OFFLINE" | "—">(() => {
     const s = String(snapshot?.system?.status ?? "—").toLowerCase();
     if (s === "ok") return "OK";
@@ -52,35 +20,7 @@ const LiveMetrics: React.FC = () => {
     return "—";
   }, [snapshot?.system?.status]);
 
-  const statusOk = useMemo(() => {
-    const s = String(snapshot?.system?.status ?? "").toLowerCase();
-    return s === "ok";
-  }, [snapshot?.system?.status]);
-
-  // ==== RUNTIME (uptime do sistema) ====
-  const startedAtMs = toMillis((snapshot as any)?.system?.startedAt);
-  const lastHbMs = toMillis((snapshot as any)?.system?.lastHeartbeatAt);
-  const baseRuntimeSec = Number((snapshot as any)?.system?.runtime ?? 0);
-
-  // "agora" usado no cálculo: se o sistema não estiver rodando, congelamos no último heartbeat
-  const referenceNowMs = statusOk ? nowMs : (lastHbMs ?? nowMs);
-
-  const runtimeMs = useMemo(() => {
-    if (startedAtMs != null) {
-      const ref = lastHbMs ?? referenceNowMs;
-      const effectiveNow = statusOk ? referenceNowMs : ref; // congela se offline
-      return Math.max(0, effectiveNow - startedAtMs);
-    }
-    const baseMs = Number.isFinite(baseRuntimeSec) ? baseRuntimeSec * 1000 : 0;
-    if (!lastHbMs) return baseMs;
-    const deltaMs = Math.max(0, referenceNowMs - lastHbMs);
-    return statusOk ? baseMs + deltaMs : baseMs; // congela se offline
-  }, [startedAtMs, lastHbMs, referenceNowMs, statusOk, baseRuntimeSec]);
-
-  const runtimeText = useMemo(() => formatDuration(runtimeMs), [runtimeMs]);
-
-  // ==== SELEÇÃO DE ATUADOR: mostra só o escolhido ====
-  // prioridade total ao contexto; se por algum motivo não existir, caímos no snapshot
+  // ===== Seleção do atuador (mostra só o escolhido) =====
   const effectiveSelected: 1 | 2 | undefined = useMemo(() => {
     if (selectedId === 1 || selectedId === 2) return selectedId;
     const snapSel = (snapshot as any)?.selectedActuator;
@@ -88,53 +28,70 @@ const LiveMetrics: React.FC = () => {
     return undefined;
   }, [selectedId, snapshot]);
 
-  const shownIds: (1 | 2)[] = useMemo(() => {
-    return effectiveSelected ? [effectiveSelected] : [];
-  }, [effectiveSelected]);
+  const shownIds: (1 | 2)[] = useMemo(
+    () => (effectiveSelected ? [effectiveSelected] : []),
+    [effectiveSelected]
+  );
 
-  // estados direto do snapshot (state = "RECUADO" | "AVANÇADO" | "DESCONHECIDO")
+  // estados direto do snapshot
   const displayStates = useMemo(() => {
     const acts = snapshot?.actuators ?? [];
     return shownIds.map((id) => {
       const a = acts.find((x) => x.id === id);
-      const state = a?.state ?? "DESCONHECIDO";
+      const state: StableState = (a?.state as StableState) ?? "DESCONHECIDO";
       return { id, state };
     });
   }, [snapshot?.actuators, shownIds]);
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="text-xl">Live Metrics</CardTitle>
+      <CardHeader className="pb-2">
+        <CardTitle>Live Metrics</CardTitle>
       </CardHeader>
+
       <CardContent>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+        {/* Linha superior: System (runtime removido) */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div>
-            <div className="text-sm text-muted-foreground mb-1">System</div>
-            <div className="text-2xl font-semibold leading-none tracking-tight">{systemText}</div>
-          </div>
-          <div>
-            <div className="text-sm text-muted-foreground mb-1">Last update (runtime)</div>
-            <div className="text-2xl font-semibold leading-none tracking-tight">
-              {runtimeText}
+            <div className="text-sm md:text-base text-slate-300 font-semibold uppercase tracking-wider">
+              System
             </div>
+            <div className="text-xl md:text-2xl font-extrabold">{systemText}</div>
           </div>
         </div>
 
-        <div className="pt-6">
-          <div className="text-sm text-muted-foreground mb-2">Actuators</div>
-          <div className="flex flex-col gap-2">
-            {displayStates.map(({ id, state }) => (
-              <div key={id} className="flex items-center gap-3">
-                <div className="w-12 text-xs font-semibold">AT{id}:</div>
-                <span className="inline-flex items-center rounded-full bg-secondary px-2 py-0.5 text-xs font-medium uppercase">
-                  {state}
-                </span>
-              </div>
-            ))}
+        {/* Lista de Atuadores com TAGs maiores (padrão moderado) */}
+        <div className="pt-5">
+          <div className="flex flex-col gap-3">
+            {displayStates.map(({ id, state }) => {
+              const label =
+                state === "AVANÇADO"
+                  ? "ABERTO"
+                  : state === "RECUADO"
+                  ? "RECUADO"
+                  : "DESCONHECIDO";
+
+              const variant =
+                label === "ABERTO"
+                  ? "success"
+                  : label === "RECUADO"
+                  ? "secondary"
+                  : "outline";
+
+              return (
+                <div key={id} className="flex items-center gap-3">
+                  <div className="w-16 text-base md:text-lg font-bold">AT{id}:</div>
+                  <Badge size="lg" variant={variant as any} className="select-none uppercase">
+                    {label}
+                  </Badge>
+                </div>
+              );
+            })}
 
             {displayStates.length === 0 && (
-              <div className="text-xs text-muted-foreground">Nenhum atuador selecionado.</div>
+              <div className="text-sm text-muted-foreground">
+                Nenhum atuador selecionado.
+              </div>
             )}
           </div>
         </div>

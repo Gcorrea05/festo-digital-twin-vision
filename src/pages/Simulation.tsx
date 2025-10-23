@@ -10,18 +10,35 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-type CatalogItem = { id:number; code:string; name:string; grp:string; label:string; severity?:number };
-type Scenario = {
-  scenario_id:string; actuator:1|2;
-  error:{ id:number; code:string; name:string; grp:string; severity?:number };
-  cause:string; actions:string[]; params:Record<string,any>;
-  ui:{ halt_sim:boolean; halt_3d:boolean; show_popup:boolean }; resume_allowed:boolean;
+type CatalogItem = {
+  id: number;
+  code: string;
+  name: string;
+  grp: string;
+  label: string;
+  severity?: number;
 };
 
-const FRIENDLY: Record<string,string> = {
-  VIB_HIGH:"Vibração elevada", IMU_SAT:"IMU saturado", IMU_STUCK:"Sinal preso/deriva",
-  CYCLE_SLOW:"Ciclo lento", STATE_STUCK:"Atuador não muda ao comando", NO_SAMPLES:"Sem telemetria recente",
+type Scenario = {
+  scenario_id: string;
+  actuator: 1 | 2;
+  error: { id: number; code: string; name: string; grp: string; severity?: number };
+  cause: string;
+  actions: string[];
+  params: Record<string, any>;
+  ui: { halt_sim: boolean; halt_3d: boolean; show_popup: boolean };
+  resume_allowed: boolean;
+};
+
+const FRIENDLY: Record<string, string> = {
+  VIB_HIGH: "Vibração elevada",
+  IMU_SAT: "IMU saturado",
+  IMU_STUCK: "Sinal preso/deriva",
+  CYCLE_SLOW: "Ciclo lento",
+  STATE_STUCK: "Atuador não muda ao comando",
+  NO_SAMPLES: "Sem telemetria recente",
 };
 
 // atraso aleatório 3–5s — usa Promise para garantir espera real
@@ -36,7 +53,7 @@ export default function Simulation() {
   const [scenario, setScenario] = useState<Scenario | null>(null);
 
   const [catLoading, setCatLoading] = useState(true);
-  const [catError,   setCatError]   = useState<string | null>(null);
+  const [catError, setCatError] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [paused3D, setPaused3D] = useState(true); // começa pausado
@@ -49,17 +66,20 @@ export default function Simulation() {
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
-    return () => { alive.current = false; };
+    return () => {
+      alive.current = false;
+    };
   }, []);
 
   // ---- catálogo
   const loadCatalog = async () => {
     try {
-      setCatLoading(true); setCatError(null);
-      const j = await fetchJson<{items: CatalogItem[]}>("/api/simulation/catalog");
+      setCatLoading(true);
+      setCatError(null);
+      const j = await fetchJson<{ items: CatalogItem[] }>("/api/simulation/catalog");
       if (!alive.current) return;
       setCatalog(Array.isArray(j?.items) ? j.items : []);
-    } catch (e:any) {
+    } catch (e: any) {
       if (!alive.current) return;
       setCatError(e?.message ?? "Falha ao carregar catálogo");
       setCatalog([]);
@@ -67,7 +87,9 @@ export default function Simulation() {
       if (alive.current) setCatLoading(false);
     }
   };
-  useEffect(() => { void loadCatalog(); }, []);
+  useEffect(() => {
+    void loadCatalog();
+  }, []);
 
   // seleção inicial
   useEffect(() => {
@@ -76,15 +98,16 @@ export default function Simulation() {
 
   // agrupado só p/ organização visual
   const grouped = useMemo(() => {
-    const map: Record<string, { code:string; items:CatalogItem[] }[]> = {};
+    const map: Record<string, { code: string; items: CatalogItem[] }[]> = {};
     const byCode = catalog.reduce<Record<string, CatalogItem[]>>((acc, it) => {
-      (acc[it.code] ||= []).push(it); return acc;
+      (acc[it.code] ||= []).push(it);
+      return acc;
     }, {});
     for (const [code, items] of Object.entries(byCode)) {
       const grp = items[0]?.grp || "Outros";
       (map[grp] ||= []).push({ code, items });
     }
-    Object.values(map).forEach(arr => arr.sort((a,b)=>a.code.localeCompare(b.code)));
+    Object.values(map).forEach((arr) => arr.sort((a, b) => a.code.localeCompare(b.code)));
     return map;
   }, [catalog]);
 
@@ -93,20 +116,19 @@ export default function Simulation() {
     if (!selectedCode) return;
     setScenario(null);
     setOpenDlg(false);
-    setPaused3D(false);      // começa animado imediatamente (play)
+    setPaused3D(false); // começa animado imediatamente (play)
     setLoading(true);
 
     try {
       // dispara em paralelo: request + timer 3–5s
-      const req = postJson<Scenario>("/api/simulation/draw", { mode:"by_code", code:selectedCode });
+      const req = postJson<Scenario>("/api/simulation/draw", { mode: "by_code", code: selectedCode });
       const wait = delay3to5s();
 
-      const j = await req;   // aguarda backend
-      await wait;            // e garante o atraso
+      const j = await req; // aguarda backend
+      await wait; // e garante o atraso
 
       if (!alive.current) return;
 
-      // debug de randomização
       console.log("[SIM] scenario:", j?.scenario_id, "code:", j?.error?.code);
 
       setScenario(j);
@@ -114,7 +136,7 @@ export default function Simulation() {
       // pausar sempre que o pop-up aparecer; se não houver pop-up, respeita halt_3d
       if (j?.ui?.show_popup !== false) {
         setOpenDlg(true);
-        setPaused3D(true);   // pausa junto com o pop-up
+        setPaused3D(true); // pausa junto com o pop-up
       } else if (j?.ui?.halt_3d) {
         setPaused3D(true);
       }
@@ -126,70 +148,87 @@ export default function Simulation() {
     }
   }
 
-  const sevBadge = scenario?.error?.severity != null && (
-    <span className={`text-white text-xs px-2 py-1 rounded ${
-      (scenario!.error.severity! >= 4 && "bg-red-600") ||
-      (scenario!.error.severity === 3 && "bg-amber-500") || "bg-emerald-600"
-    }`}>Sev {scenario!.error.severity}</span>
-  );
+  const sevBadge =
+    scenario?.error?.severity != null && (
+      <span
+        className={`text-white text-xs px-2 py-1 rounded ${
+          (scenario!.error.severity! >= 4 && "bg-red-600") ||
+          (scenario!.error.severity === 3 && "bg-amber-500") ||
+          "bg-emerald-600"
+        }`}
+      >
+        Sev {scenario!.error.severity}
+      </span>
+    );
 
   return (
-    <div className="p-6 space-y-6">
-      <h1 className="text-2xl font-bold">Simulation</h1>
+    <section className="space-y-4 p-6">
+      {/* Título padrão moderado vem de index.css (h1) */}
+      <h1>Simulation</h1>
 
-      <div className="shadow-md rounded-lg border border-slate-700/40 bg-[#0b1220] p-4 space-y-4">
-        {/* RESET controlado pela key */}
-        <ThreeDModel key={modelKey} paused={paused3D} />
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle>Modelo</CardTitle>
+        </CardHeader>
 
-        <div className="flex items-center gap-3 flex-wrap">
-          <label className="text-sm font-medium">Tipo de erro:</label>
-
-          <div className="flex flex-col">
-            <select
-              className="rounded px-3 py-2 min-w-72 text-white bg-slate-900/70 border border-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500"
-              value={selectedCode}
-              onChange={(e) => {
-                setSelectedCode(e.target.value);
-                setScenario(null);
-                setPaused3D(true);     // volta pausado
-                setModelKey(k => k+1); // RESET: retorna à pose inicial
-              }}
-            >
-              <option value="" disabled>
-                {catLoading ? "Carregando cenários..." : catError ? "Falha ao carregar" : "Selecione um cenário"}
-              </option>
-
-              {Object.entries(grouped).map(([grp, entries]) => (
-                <optgroup key={grp} label={grp}>
-                  {entries.map(({ code, items }) => (
-                    <option key={code} value={code} title={items.map(x=>x.label).join(" | ")}>
-                      {(FRIENDLY[code] || items[0]?.name || code)} ({code})
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-
-            {catError && (
-              <div className="mt-1 text-xs text-amber-300">
-                Falha ao carregar do servidor — usando lista local.
-                {" "}
-                <button className="underline" onClick={() => void loadCatalog()}>
-                  Tentar novamente
-                </button>
-              </div>
-            )}
+        <CardContent className="space-y-4">
+          {/* RESET controlado pela key */}
+          <div className="rounded-2xl border border-slate-800 bg-slate-950 p-4">
+            <ThreeDModel key={modelKey} paused={paused3D} />
           </div>
 
-          <Button
-            className="px-4"
-            onClick={handleSimulate}
-            disabled={loading || !selectedCode}
-          >
-            {loading ? "Gerando..." : "Simular"}
-          </Button>
-        </div>
-      </div>
+          {/* Linha de seleção + ação (tamanhos moderados) */}
+          <div className="flex items-center gap-4 flex-wrap">
+            <label className="text-base md:text-lg font-semibold tracking-wide text-slate-300">
+              Tipo de erro:
+            </label>
+
+            <div className="flex flex-col">
+              <select
+                className="rounded-xl px-3.5 py-2 text-base min-w-72 text-white bg-slate-900/70 border border-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                value={selectedCode}
+                onChange={(e) => {
+                  setSelectedCode(e.target.value);
+                  setScenario(null);
+                  setPaused3D(true); // volta pausado
+                  setModelKey((k) => k + 1); // RESET: retorna à pose inicial
+                }}
+              >
+                <option value="" disabled>
+                  {catLoading
+                    ? "Carregando cenários..."
+                    : catError
+                    ? "Falha ao carregar"
+                    : "Selecione um cenário"}
+                </option>
+
+                {Object.entries(grouped).map(([grp, entries]) => (
+                  <optgroup key={grp} label={grp}>
+                    {entries.map(({ code, items }) => (
+                      <option key={code} value={code} title={items.map((x) => x.label).join(" | ")}>
+                        {(FRIENDLY[code] || items[0]?.name || code)} ({code})
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+
+              {catError && (
+                <div className="mt-1 text-xs text-amber-300">
+                  Falha ao carregar do servidor — usando lista local.{" "}
+                  <button className="underline" onClick={() => void loadCatalog()}>
+                    Tentar novamente
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <Button className="px-4 py-2 text-base rounded-xl" onClick={handleSimulate} disabled={loading || !selectedCode}>
+              {loading ? "Gerando..." : "Simular"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* POP-UP padronizado */}
       <Dialog open={openDlg} onOpenChange={setOpenDlg}>
@@ -209,7 +248,9 @@ export default function Simulation() {
               <div className="pt-1">
                 <div className="text-sm font-semibold mb-2">Ações sugeridas:</div>
                 <ul className="list-disc ml-4 space-y-1">
-                  {scenario.actions.map((a,i) => <li key={i}>{a}</li>)}
+                  {scenario.actions.map((a, i) => (
+                    <li key={i}>{a}</li>
+                  ))}
                 </ul>
               </div>
 
@@ -221,7 +262,7 @@ export default function Simulation() {
                     setPaused3D(true);
                     setOpenDlg(false);
                     setScenario(null);
-                    setModelKey(k => k+1); // RESET
+                    setModelKey((k) => k + 1); // RESET
                     alert("Erro reconhecido (ACK).");
                   }}
                 >
@@ -233,9 +274,9 @@ export default function Simulation() {
                     onClick={() => {
                       // Retomar (mantém sua função atual)
                       setScenario(null);
-                      setPaused3D(true);   // você pediu para pausar no retomar
+                      setPaused3D(true); // você pediu para pausar no retomar
                       setOpenDlg(false);
-                      setModelKey(k => k+1); // RESET também é útil aqui
+                      setModelKey((k) => k + 1); // RESET também é útil aqui
                     }}
                   >
                     Retomar
@@ -248,7 +289,7 @@ export default function Simulation() {
                       setScenario(null);
                       setPaused3D(true);
                       setOpenDlg(false);
-                      setModelKey(k => k+1); // RESET
+                      setModelKey((k) => k + 1); // RESET
                     }}
                   >
                     Encerrar simulação
@@ -259,6 +300,6 @@ export default function Simulation() {
           )}
         </DialogContent>
       </Dialog>
-    </div>
+    </section>
   );
 }
