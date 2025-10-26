@@ -435,7 +435,7 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
         { title: "Sistema Ligado", value: systemText },
         {
           title: "Vibration (overall)",
-          value: vibOverall != null ? `${vibOverall.toFixed(3)} g` : "—",
+          value: vibOverall != null ? `${(vibOverall-1).toFixed(3)} g` : "—",
         },
         { title: "DTAbre (últ.)", value: fmtMs(tOpenMs) },
         { title: "DTFecha (últ.)", value: fmtMs(tCloseMs) },
