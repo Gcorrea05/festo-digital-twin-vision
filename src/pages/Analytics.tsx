@@ -113,7 +113,7 @@ const Analytics: React.FC = () => {
   const mpuA2 = idsArray[1] != null ? String(idsArray[1]) : null;
   const mpuId = useMemo(() => (act === 1 ? mpuA1 : mpuA2), [act, mpuA1, mpuA2]);
 
-  // ===== Vibração (histórico bruto – usado no comparativo A1×A2) =====
+  // ===== Vibração (histórico bruto – usado no comparativo A1×A2 e fallback) =====
   const { rows: rowsAct } = useMpuHistory(mpuId, "-10m", 2000, true);
   const { rows: rowsA1 } = useMpuHistory(mpuA1, "-10m", 2000, true);
   const { rows: rowsA2 } = useMpuHistory(mpuA2, "-10m", 2000, true);
@@ -196,7 +196,6 @@ const Analytics: React.FC = () => {
   }, [mpuChartData]);
 
   // ===== Dados finais para o gráfico Vibração/Runtime (subtraindo 1g)
-  // Agora o X é “minute” (tempo), igual ao gráfico comparativo =====
   const vibRtPoints = useMemo(() => {
     const apiPoints = (aggAct ?? [])
       .filter(
@@ -324,51 +323,53 @@ const Analytics: React.FC = () => {
                 <ChartContainer config={{}}>
                   {optVib === "vib_runtime" ? (
                     vibRtPoints.length ? (
-                      <LineChart data={vibRtPoints}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis
-                          dataKey="minute" // X por minuto (como no remoto)
-                          tickFormatter={(iso: string) =>
-                            new Date(iso).toLocaleTimeString([], {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                              hour12: false,
-                            })
-                          }
-                        />
-                        <YAxis
-                          dataKey="vib"
-                          label={{
-                            value: "Vibração (média/min) - 1g",
-                            angle: -90,
-                            position: "insideLeft",
-                          }}
-                        />
-                        <Tooltip
-                          content={<ChartTooltipContent />}
-                          labelFormatter={(iso: string) =>
-                            new Date(iso).toLocaleTimeString([], {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                              hour12: false,
-                            })
-                          }
-                          formatter={(val: number, name) =>
-                            name === "vib"
-                              ? [`${val.toFixed(3)}`, "Vibração (avg) - 1g"]
-                              : [String(val), name]
-                          }
-                        />
-                        <Legend />
-                        <Line
-                          type="monotone"
-                          dataKey="vib"
-                          name={`Vibração A${act} (-1g)`}
-                          stroke={act === 1 ? C.A1 : C.A2}
-                          dot={false}
-                          strokeWidth={2}
-                        />
-                      </LineChart>
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={vibRtPoints}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis
+                            dataKey="minute"
+                            tickFormatter={(iso: string) =>
+                              new Date(iso).toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                                hour12: false,
+                              })
+                            }
+                          />
+                          <YAxis
+                            dataKey="vib"
+                            label={{
+                              value: "Vibração (média/min) - 1g",
+                              angle: -90,
+                              position: "insideLeft",
+                            }}
+                          />
+                          <Tooltip
+                            content={<ChartTooltipContent />}
+                            labelFormatter={(iso: string) =>
+                              new Date(iso).toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                                hour12: false,
+                              })
+                            }
+                            formatter={(val: number, name) =>
+                              name === "vib"
+                                ? [`${val.toFixed(3)}`, "Vibração (avg) - 1g"]
+                                : [String(val), name]
+                            }
+                          />
+                          <Legend />
+                          <Line
+                            type="monotone"
+                            dataKey="vib"
+                            name={`Vibração A${act} (-1g)`}
+                            stroke={act === 1 ? C.A1 : C.A2}
+                            dot={false}
+                            strokeWidth={2}
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
                     ) : (
                       <div className="w-full h-full flex items-center justify-center text-sm opacity-70">
                         Sem pontos para exibir nesta janela.

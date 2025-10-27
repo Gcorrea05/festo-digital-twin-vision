@@ -70,7 +70,7 @@ async function fetchFirstOk<T>(candidates: Array<{ url: string; init?: RequestIn
 }
 
 /* ======================
-   Tipos (existentes)
+   Tipos (existentes + ajustes p/ live.mpu)
    ====================== */
 export type StableState = "RECUADO" | "AVANÇADO" | "DESCONHECIDO";
 export type PendingTarget = "AV" | "REC" | null;
@@ -197,6 +197,33 @@ export async function getActuatorsStateFast(): Promise<{
     ts: snap.ts,
     actuators: (snap.actuators || []) as any,
   };
+}
+
+/** === Novo helper: pega o agregado leve do MPU enviado no /api/live/snapshot === */
+export type LiveMpuItem = { id: number; rms: number };
+export async function getLiveMpuRms(): Promise<{ ts: string; items: LiveMpuItem[] }> {
+  try {
+    const snap = await fetchJson<any>("/api/live/snapshot");
+    const ts = String(snap?.ts ?? new Date().toISOString());
+    const items: LiveMpuItem[] = Array.isArray(snap?.mpu)
+      ? snap.mpu
+          .map((m: any) => ({ id: Number(m.id), rms: Number(m.rms ?? m.overall ?? 0) }))
+          .filter((x: any) => Number.isFinite(x.id))
+      : [];
+    return { ts, items };
+  } catch {
+    // Sem live snapshot, tenta monitoring snapshot (tem vib. overall por mpu)
+    try {
+      const mon = await fetchJson<any>("/api/monitoring/snapshot");
+      const ts = String(mon?.ts ?? new Date().toISOString());
+      const items: LiveMpuItem[] = Array.isArray(mon?.vibration?.items)
+        ? mon.vibration.items.map((it: any) => ({ id: Number(it.mpu_id), rms: Number(it.overall ?? 0) }))
+        : [];
+      return { ts, items };
+    } catch {
+      return { ts: new Date().toISOString(), items: [] };
+    }
+  }
 }
 
 /* ===== OPC: candidatos de rotas (by-name e by-facet) ===== */
@@ -504,7 +531,7 @@ async function cpmFromOpcByMinute(act: "A1" | "A2", since: string): Promise<Minu
   for (let i = 1; i < rows.length; i++) {
     const prevRow = rows[i - 1];
     const currRow = rows[i];
-    if (!prevRow || !currRow) continue; // necessário se noUncheckedIndexedAccess=true
+    if (!prevRow || !currRow) continue;
 
     const prev = toBool01((prevRow as any).value);
     const curr = toBool01((currRow as any).value);
@@ -528,13 +555,12 @@ async function runtimeFromOpcByMinute(act: "A1" | "A2", since: string): Promise<
 
   for (let i = 0; i < rows.length; i++) {
     const curr = rows[i];
-    if (!curr) continue; // narrowing p/ noUncheckedIndexedAccess
+    if (!curr) continue;
     const v = toBool01((curr as any).value);
     if (!v) continue;
 
     const t0 = new Date(curr.ts).getTime();
 
-    // pega o próximo de forma segura
     const next = i + 1 < rows.length ? rows[i + 1] : undefined;
     const t1 = next ? new Date(next.ts).getTime() : Date.now();
 
@@ -597,6 +623,7 @@ export async function getLiveActuatorsState(): Promise<{
   ts: string;
   system: { status: string };
   actuators: any[];
+  mpu?: LiveMpuItem[];
 }> {
   const normAct = (raw: any) => {
     if (!raw) return null;
@@ -627,7 +654,10 @@ export async function getLiveActuatorsState(): Promise<{
     } catch {}
     const arr = Array.isArray(data?.actuators) ? data.actuators : [];
     const actuators = arr.map(normAct).filter(Boolean);
-    return { ts: String(data?.ts ?? new Date().toISOString()), system: { status }, actuators };
+    const mpu: LiveMpuItem[] = Array.isArray(data?.mpu)
+      ? data.mpu.map((m: any) => ({ id: Number(m.id), rms: Number(m.rms ?? m.overall ?? 0) }))
+      : [];
+    return { ts: String(data?.ts ?? new Date().toISOString()), system: { status }, actuators, mpu };
   } catch {
     try {
       const data = await fetchJson<any>("/api/live/actuators/state-mon");
@@ -903,7 +933,12 @@ export async function getAlerts(limit = 5): Promise<{ items: AlertItem[]; count:
    ============================================================================ */
 
 // Mensagens WS (contratos novos)
-export type WSMessageLive = { type: "live"; ts: string; actuators: { id: number; state: StableState }[] };
+export type WSMessageLive = {
+  type: "live";
+  ts: string;
+  actuators: { id: number; state: StableState; pending?: PendingTarget }[];
+  mpu?: { id: number; rms: number }[];
+};
 export type WSMessageMonitoring = {
   type: "monitoring";
   ts: string;
@@ -984,7 +1019,13 @@ function startSnapshotFallback(
           actuators: (p?.actuators ?? []).map((a: any) => ({
             id: Number(a.id ?? a.actuator_id),
             state: a.state,
+            pending: a.pending ?? null,
           })),
+          mpu: Array.isArray(p?.mpu)
+            ? p.mpu
+                .map((m: any) => ({ id: Number(m.id), rms: Number(m.rms ?? m.overall ?? 0) }))
+                .filter((x: any) => Number.isFinite(x.id))
+            : [],
         } as WSMessageLive);
       } else {
         const p = await fetchJson<any>("/api/monitoring/snapshot");

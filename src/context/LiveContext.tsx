@@ -42,6 +42,8 @@ export type Snapshot = {
     ts: number; // epoch ms de quando o snapshot foi composto
   };
   actuators: ActuatorSnapshot[];
+  /** Novo: amostra leve do MPU (RMS) vinda do /ws/live quando disponível */
+  mpu?: { id: number; rms: number }[];
   selectedActuator?: 1 | 2;
 };
 
@@ -114,13 +116,13 @@ export function LiveProvider({ children }: Props) {
       for (const a of prevList) map.set(a.id, a);
       // aplica novos (com ts do pacote)
       for (const a of incoming) {
-        const prev = map.get(a.id);
+        const prevA = map.get(a.id);
         map.set(a.id, {
-          ...(prev ?? {}),
+          ...(prevA ?? {}),
           ...a,
           ts,
           // preserva hasStarted=true se já estava marcado antes
-          hasStarted: (prev?.hasStarted || a.hasStarted) ? true : false,
+          hasStarted: (prevA?.hasStarted || a.hasStarted) ? true : false,
         } as ActuatorSnapshot);
       }
       const merged = Array.from(map.values()).sort((x, y) => x.id - y.id);
@@ -128,6 +130,8 @@ export function LiveProvider({ children }: Props) {
         ts,
         system: { status: prev?.system.status ?? "ok", ts: Date.now() },
         actuators: merged,
+        // preserva mpu existente (será atualizado no applyLiveMessage se vier no pacote)
+        ...(prev?.mpu ? { mpu: prev.mpu } : {}),
         ...(selectedActuator ? { selectedActuator } : {}),
       };
     });
@@ -181,9 +185,27 @@ export function LiveProvider({ children }: Props) {
       })
       .filter(Boolean) as ActuatorSnapshot[];
 
+    // RMS leve opcional do MPU vindo no mesmo pacote
+    const mpuLive = Array.isArray((msg as any).mpu)
+      ? (msg as any).mpu
+          .map((m: any) => ({
+            id: Number(m.id),
+            rms: Number(m.rms ?? m.overall ?? 0),
+          }))
+          .filter((x: any) => Number.isFinite(x.id))
+      : undefined;
+
     lastTickRef.current = Date.now();
 
+    // aplica atuadores
     upsertActuators(normalized, ts);
+
+    // aplica mpu (se veio) no mesmo snapshot/ts
+    if (mpuLive) {
+      setSnapshot((prev) =>
+        prev ? { ...prev, ts, mpu: mpuLive } : prev
+      );
+    }
 
     // status = ok após pacote válido
     setSnapshot((prev) =>
@@ -221,6 +243,7 @@ export function LiveProvider({ children }: Props) {
           ts: prev?.ts,
           system: { status, ts: Date.now() },
           actuators: prev?.actuators ?? [],
+          ...(prev?.mpu ? { mpu: prev.mpu } : {}),
           ...(selectedActuator ? { selectedActuator } : {}),
         }));
       })
@@ -230,6 +253,7 @@ export function LiveProvider({ children }: Props) {
           ts: prev?.ts,
           system: { status: "offline", ts: Date.now() },
           actuators: prev?.actuators ?? [],
+          ...(prev?.mpu ? { mpu: prev.mpu } : {}),
           ...(selectedActuator ? { selectedActuator } : {}),
         }));
       });
@@ -272,6 +296,7 @@ export function LiveProvider({ children }: Props) {
         ts: prev?.ts,
         system: { status: "degraded", ts: Date.now() },
         actuators: prev?.actuators ?? [],
+        ...(prev?.mpu ? { mpu: prev.mpu } : {}),
         ...(selectedActuator ? { selectedActuator } : {}),
       }));
     } else {
@@ -281,6 +306,7 @@ export function LiveProvider({ children }: Props) {
             ts: prev?.ts,
             system: { status: "degraded", ts: Date.now() }, // até 1º live/hb
             actuators: prev?.actuators ?? [],
+            ...(prev?.mpu ? { mpu: prev.mpu } : {}),
             ...(selectedActuator ? { selectedActuator } : {}),
           }));
         },

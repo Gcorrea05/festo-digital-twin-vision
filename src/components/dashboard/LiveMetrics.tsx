@@ -1,4 +1,3 @@
-// src/components/dashboard/LiveMetrics.tsx
 import React, { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -9,9 +8,9 @@ type StableState = "RECUADO" | "AVANÇADO" | "DESCONHECIDO";
 
 const LiveMetrics: React.FC = () => {
   const { snapshot } = useLive();
-  const { selectedId } = useActuatorSelection(); // “Modelo 1/2”
+  const { selectedId } = useActuatorSelection(); // A1/A2 da UI (fonte da verdade)
 
-  // ===== System status (moderado) =====
+  // ===== System status =====
   const systemText = useMemo<"OK" | "DEGRADED" | "OFFLINE" | "—">(() => {
     const s = String(snapshot?.system?.status ?? "—").toLowerCase();
     if (s === "ok") return "OK";
@@ -20,28 +19,27 @@ const LiveMetrics: React.FC = () => {
     return "—";
   }, [snapshot?.system?.status]);
 
-  // ===== Seleção do atuador (mostra só o escolhido) =====
-  const effectiveSelected: 1 | 2 | undefined = useMemo(() => {
-    if (selectedId === 1 || selectedId === 2) return selectedId;
-    const snapSel = (snapshot as any)?.selectedActuator;
-    if (snapSel === 1 || snapSel === 2) return snapSel;
-    return undefined;
-  }, [selectedId, snapshot]);
+  // ===== ID efetivo a mostrar (sempre o escolhido na UI) =====
+  const shownId: 1 | 2 = selectedId; // <<— sem depender do snapshot.selectedActuator
 
-  const shownIds: (1 | 2)[] = useMemo(
-    () => (effectiveSelected ? [effectiveSelected] : []),
-    [effectiveSelected]
-  );
-
-  // estados direto do snapshot
-  const displayStates = useMemo(() => {
+  // ===== Estado do atuador selecionado =====
+  const display = useMemo(() => {
     const acts = snapshot?.actuators ?? [];
-    return shownIds.map((id) => {
-      const a = acts.find((x) => x.id === id);
-      const state: StableState = (a?.state as StableState) ?? "DESCONHECIDO";
-      return { id, state };
-    });
-  }, [snapshot?.actuators, shownIds]);
+    const a = acts.find((x) => x.id === shownId);
+    const state: StableState = (a?.state as StableState) ?? "DESCONHECIDO";
+    return { id: shownId, state };
+  }, [snapshot?.actuators, shownId]);
+
+  // ===== Label/variant =====
+  const label =
+    display.state === "AVANÇADO"
+      ? "ABERTO"
+      : display.state === "RECUADO"
+      ? "RECUADO"
+      : "DESCONHECIDO";
+
+  const variant =
+    label === "ABERTO" ? "success" : label === "RECUADO" ? "secondary" : "outline";
 
   return (
     <Card>
@@ -50,7 +48,7 @@ const LiveMetrics: React.FC = () => {
       </CardHeader>
 
       <CardContent>
-        {/* Linha superior: System (runtime removido) */}
+        {/* Linha superior: System */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div>
             <div className="text-sm md:text-base text-slate-300 font-semibold uppercase tracking-wider">
@@ -60,39 +58,15 @@ const LiveMetrics: React.FC = () => {
           </div>
         </div>
 
-        {/* Lista de Atuadores com TAGs maiores (padrão moderado) */}
+        {/* Atuador selecionado */}
         <div className="pt-5">
           <div className="flex flex-col gap-3">
-            {displayStates.map(({ id, state }) => {
-              const label =
-                state === "AVANÇADO"
-                  ? "ABERTO"
-                  : state === "RECUADO"
-                  ? "RECUADO"
-                  : "DESCONHECIDO";
-
-              const variant =
-                label === "ABERTO"
-                  ? "success"
-                  : label === "RECUADO"
-                  ? "secondary"
-                  : "outline";
-
-              return (
-                <div key={id} className="flex items-center gap-3">
-                  <div className="w-16 text-base md:text-lg font-bold">AT{id}:</div>
-                  <Badge size="lg" variant={variant as any} className="select-none uppercase">
-                    {label}
-                  </Badge>
-                </div>
-              );
-            })}
-
-            {displayStates.length === 0 && (
-              <div className="text-sm text-muted-foreground">
-                Nenhum atuador selecionado.
-              </div>
-            )}
+            <div className="flex items-center gap-3">
+              <div className="w-16 text-base md:text-lg font-bold">AT{display.id}:</div>
+              <Badge size="lg" variant={variant as any} className="select-none uppercase">
+                {label}
+              </Badge>
+            </div>
           </div>
         </div>
       </CardContent>

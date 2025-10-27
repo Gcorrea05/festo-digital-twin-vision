@@ -39,8 +39,8 @@
     "@radix-ui/react-toggle": "^1.1.0",
     "@radix-ui/react-toggle-group": "^1.1.0",
     "@radix-ui/react-tooltip": "^1.1.4",
-    "@react-three/drei": "^9.56.11",
-    "@react-three/fiber": "^8.18.0",
+    "@react-three/drei": "9.100.0",
+    "@react-three/fiber": "8.15.0",
     "@tanstack/react-query": "^5.56.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -61,7 +61,7 @@
     "sonner": "^1.5.0",
     "tailwind-merge": "^2.5.2",
     "tailwindcss-animate": "^1.0.7",
-    "three": "^0.180.0",
+    "three": "0.164.0",
     "three-mesh-bvh": "^0.8.0",
     "vaul": "^0.9.3",
     "zod": "^3.23.8"
@@ -85,5 +85,10 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.0.1",
     "vite": "^7.1.7"
+  },
+  "overrides": {
+    "three": "0.164.0",
+    "@react-three/fiber": "8.15.0",
+    "@react-three/drei": "9.100.0"
   }
 }

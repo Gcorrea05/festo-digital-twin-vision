@@ -1,30 +1,38 @@
-// src/context/ActuatorSelectionContext.tsx
-// Contexto simples para compartilhar o atuador selecionado (1 ou 2)
-// ThreeDModel seta, LiveMetrics lê.
-
-import React, { createContext, useContext, useState, ReactNode } from "react";
+import React, {
+  createContext,
+  useContext,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 
 type Ctx = {
-  selectedId: number;              // 1 | 2
-  setSelectedId: (id: number) => void;
+  /** Atuador selecionado globalmente (1 = A1 / Modelo 1, 2 = A2 / Modelo 2) */
+  selectedId: 1 | 2;
+  /** Define o atuador selecionado globalmente */
+  setSelectedId: (id: 1 | 2) => void;
 };
 
-const ActuatorSelectionContext = createContext<Ctx | undefined>(undefined);
+const ActSelCtx = createContext<Ctx | undefined>(undefined);
 
+/** Hook para consumir o seletor de atuador */
 export function useActuatorSelection(): Ctx {
-  const ctx = useContext(ActuatorSelectionContext);
-  if (!ctx) {
-    // Fallback seguro: se não houver provider, assume 1
-    return { selectedId: 1, setSelectedId: () => {} };
+  const v = useContext(ActSelCtx);
+  if (!v) {
+    throw new Error(
+      "useActuatorSelection must be used inside <ActuatorSelectionProvider>"
+    );
   }
-  return ctx;
+  return v;
 }
 
-export function ActuatorSelectionProvider({ children }: { children: ReactNode }) {
-  const [selectedId, setSelectedId] = useState<number>(1);
-  return (
-    <ActuatorSelectionContext.Provider value={{ selectedId, setSelectedId }}>
-      {children}
-    </ActuatorSelectionContext.Provider>
-  );
+/** Provider que mantém no estado qual atuador (1/2) está selecionado */
+export function ActuatorSelectionProvider({
+  children,
+}: {
+  children: ReactNode;
+}) {
+  const [selectedId, setSelectedId] = useState<1 | 2>(1);
+  const value = useMemo(() => ({ selectedId, setSelectedId }), [selectedId]);
+  return <ActSelCtx.Provider value={value}>{children}</ActSelCtx.Provider>;
 }
