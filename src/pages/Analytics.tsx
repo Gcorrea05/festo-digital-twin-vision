@@ -27,8 +27,19 @@ function toArray<T = any>(x: any): T[] {
   return [];
 }
 
-const toMinuteIsoUTC = (d: Date) =>
-  new Date(
+// --- helpers de tempo (sempre UTC) ---
+const ensureIsoUtc = (s: string) => {
+  if (!s) return s;
+  // já possui 'Z' ou offset +HH:MM / -HH:MM
+  if (/[zZ]|[+\-]\d{2}:\d{2}$/.test(s)) return s;
+  return s + "Z";
+};
+
+const parseUTC = (s: string) => new Date(ensureIsoUtc(s));
+
+const toMinuteIsoUTC = (dOrStr: Date | string) => {
+  const d = typeof dOrStr === "string" ? parseUTC(dOrStr) : dOrStr;
+  return new Date(
     Date.UTC(
       d.getUTCFullYear(),
       d.getUTCMonth(),
@@ -39,14 +50,15 @@ const toMinuteIsoUTC = (d: Date) =>
       0
     )
   ).toISOString();
+};
 
-// subtrai 1g (gravidade) dos valores de vibração
+// subtrai 1g (usado no dataset vindo da API histórica quando não há RMS)
 const minusG = (v: number | null | undefined) => {
   const n = Number(v);
   return Number.isFinite(n) ? n - 1 : 0;
 };
 
-// módulo da aceleração e subtrai 1g (clamp >= 0)
+// (apenas se necessário): módulo menos 1g
 const magMinusG = (ax?: number, ay?: number, az?: number) => {
   const x = Number(ax ?? 0), y = Number(ay ?? 0), z = Number(az ?? 0);
   const mag = Math.sqrt(x * x + y * y + z * z);
@@ -97,6 +109,61 @@ type MpuPoint = {
 /* ========================= Constantes ========================= */
 const VIB_POLL_MS = 60000;
 
+// Conversão de RAW -> g (±2g por padrão). Ajuste se a faixa for outra.
+const RAW_TO_G = 1 / 16384;
+const pickG = (g?: number, raw?: number) =>
+  Number.isFinite(g) ? Number(g) :
+  Number.isFinite(raw) ? Number(raw) * RAW_TO_G : 0;
+
+/* ===== HPF + RMS (vibração dinâmica) ===== */
+type HPFState = { axPrev: number; ayPrev: number; azPrev: number; xPrev: number; yPrev: number; zPrev: number; };
+const makeHPF = (alpha: number) => {
+  const st: HPFState = { axPrev:0, ayPrev:0, azPrev:0, xPrev:0, yPrev:0, zPrev:0 };
+  return (ax: number, ay: number, az: number) => {
+    const fx = alpha * (st.axPrev + ax - st.xPrev);
+    const fy = alpha * (st.ayPrev + ay - st.yPrev);
+    const fz = alpha * (st.azPrev + az - st.zPrev);
+    st.axPrev = fx; st.ayPrev = fy; st.azPrev = fz;
+    st.xPrev = ax; st.yPrev = ay; st.zPrev = az;
+    return { fx, fy, fz };
+  };
+};
+
+// agrega RMS por minuto (sobre vetor filtrado por HPF)
+const rmsByMinute = (
+  points: { ts: string; ax: number; ay: number; az: number; }[],
+  alpha = 0.96 // ~ cutoff ~0.5–1 Hz para 100 Hz
+) => {
+  const hpf = makeHPF(alpha);
+  const byMin = new Map<string, { sumSq: number; n: number }>();
+  for (const p of points) {
+    const { fx, fy, fz } = hpf(p.ax, p.ay, p.az);
+    const minute = toMinuteIsoUTC(p.ts);
+    const acc = byMin.get(minute) ?? { sumSq: 0, n: 0 };
+    acc.sumSq += (fx*fx + fy*fy + fz*fz);
+    acc.n += 1;
+    byMin.set(minute, acc);
+  }
+  const out: { minute: string; vib: number }[] = [];
+  for (const [m, v] of byMin) {
+    const meanSq = v.n ? v.sumSq / v.n : 0;
+    out.push({ minute: m, vib: Math.sqrt(meanSq) });
+  }
+  return out.sort((a,b)=>a.minute.localeCompare(b.minute));
+};
+
+/* ===== Unidade dinâmica para exibição (g, mg, µg) ===== */
+type Unit = "g" | "mg" | "µg";
+const pickUnit = (maxG: number): Unit => {
+  if (!isFinite(maxG) || maxG <= 0) return "g";
+  if (maxG >= 0.1) return "g";        // ≥ 0.1 g mostra em g
+  if (maxG >= 0.001) return "mg";     // [0.001 g, 0.1 g) -> mg
+  return "µg";                        // < 0.001 g -> µg
+};
+const scaleByUnit = (v: number, unit: Unit) =>
+  unit === "g" ? v : unit === "mg" ? v * 1_000 : v * 1_000_000;
+const unitSuffix = (u: Unit) => (u === "g" ? "g" : u === "mg" ? "mg" : "µg");
+
 /* ========================= Página ========================= */
 const Analytics: React.FC = () => {
   // ===== Toggle global de atuador (Modelo 1/2) =====
@@ -112,7 +179,6 @@ const Analytics: React.FC = () => {
   const mpuA1 = idsArray[0] != null ? String(idsArray[0]) : null;
   const mpuA2 = idsArray[1] != null ? String(idsArray[1]) : null;
   const mpuId = useMemo(() => (act === 1 ? mpuA1 : mpuA2), [act, mpuA1, mpuA2]);
-
   // ===== Vibração (histórico bruto – usado no comparativo A1×A2 e fallback) =====
   const { rows: rowsAct } = useMpuHistory(mpuId, "-10m", 2000, true);
   const { rows: rowsA1 } = useMpuHistory(mpuA1, "-10m", 2000, true);
@@ -124,17 +190,17 @@ const Analytics: React.FC = () => {
       const o = r as MpuRowLike;
       return {
         ts: String(o.ts ?? o.ts_utc ?? ""),
-        ax: Number(o.ax ?? o.ax_g ?? 0),
-        ay: Number(o.ay ?? o.ay_g ?? 0),
-        az: Number(o.az ?? o.az_g ?? 0),
-        gx: Number(o.gx ?? o.gx_dps ?? 0),
-        gy: Number(o.gy ?? o.gy_dps ?? 0),
-        gz: Number(o.gz ?? o.gz_dps ?? 0),
+        // garante unidade em g (prioriza *_g; senão converte raw -> g)
+        ax: pickG(o.ax_g, o.ax),
+        ay: pickG(o.ay_g, o.ay),
+        az: pickG(o.az_g, o.az),
+        // giros não usados nos gráficos atuais
+        gx: 0, gy: 0, gz: 0,
       };
     });
   };
 
-  // série principal (atuador selecionado) — para fallback de vib média/min
+  // série principal (atuador selecionado) — para fallback de vib dinâmica/min
   const actMpuRef = useRef<MpuPoint[]>([]);
   const [mpuChartData, setMpuChartData] = useState<MpuPoint[]>([]);
   useEffect(() => {
@@ -154,7 +220,7 @@ const Analytics: React.FC = () => {
   useEffect(() => setMpuA1Data(parseMpu(rowsA1 as any)), [rowsA1]);
   useEffect(() => setMpuA2Data(parseMpu(rowsA2 as any)), [rowsA2]);
 
-  // ===== Métricas agregadas por minuto (para Vibração/Runtime) =====
+  // ===== Métricas agregadas por minuto (para Vibração/Runtime do atuador selecionado) =====
   const [aggAct, setAggAct] = useState<MinuteAgg[]>([]);
   const loadAgg = useCallback(async () => {
     const actLabel = act === 1 ? "A1" : "A2";
@@ -169,87 +235,98 @@ const Analytics: React.FC = () => {
     return () => clearInterval(id);
   }, [loadAgg]);
 
-  // ===== Fallback vibração do histórico bruto (média/min) =====
+  // ===== Fallback vibração do histórico bruto -> RMS/min (HPF remove gravidade) =====
   const vibClientFallback = useMemo(() => {
     const src = mpuChartData;
     if (!src?.length) return [];
-    const byMin = new Map<string, { sum: number; n: number }>();
-    for (const p of src) {
-      const t = new Date(p.ts);
-      const minuteIso = toMinuteIsoUTC(t);
-      const ax = Number(p.ax ?? 0),
-        ay = Number(p.ay ?? 0),
-        az = Number(p.az ?? 0);
-      // módulo do vetor -> média por minuto, depois subtrai 1g
-      const mag = Math.sqrt(ax * ax + ay * ay + az * az);
-      const acc = byMin.get(minuteIso) ?? { sum: 0, n: 0 };
-      acc.sum += mag;
-      acc.n += 1;
-      byMin.set(minuteIso, acc);
-    }
-    const out: { minute: string; vib: number; runtime: number }[] = [];
-    for (const [minute, v] of byMin) {
-      const avg = v.n ? v.sum / v.n : 0;
-      out.push({ minute, vib: avg - 1, runtime: 0 }); // <— subtrai 1g
-    }
-    return out.sort((a, b) => a.minute.localeCompare(b.minute));
+    // retorna [{ minute, vib }]
+    return rmsByMinute(src);
   }, [mpuChartData]);
 
-  // ===== Dados finais para o gráfico Vibração/Runtime (subtraindo 1g)
+  // ===== Dados finais para o gráfico Vibração/Runtime =====
+  // Preferimos os dados da API (vib_avg por minuto, onde aplicávamos -1g),
+  // mas se a API estiver indisponível, usamos a vibração dinâmica RMS/min calculada no client.
   const vibRtPoints = useMemo(() => {
     const apiPoints = (aggAct ?? [])
       .filter(
         (r) => typeof r.vib_avg === "number" && typeof r.runtime_s === "number"
       )
       .map((r) => ({
-        minute: r.minute,              // eixo X por tempo
-        runtime: r.runtime_s ?? 0,     // mantemos no payload (se quiser usar depois)
-        vib: minusG(r.vib_avg),        // vib média/min - 1g
+        minute: r.minute,              // eixo X por tempo (já ISO UTC)
+        runtime: r.runtime_s ?? 0,     // mantido no payload
+        vib: minusG(r.vib_avg),        // vib média/min - 1g (do backend atual)
       }));
     if (apiPoints.length) return apiPoints;
 
-    // usa fallback local (já -1g), também por minuto
-    return vibClientFallback;
+    // fallback local: vib dinâmica RMS/min (em g)
+    return vibClientFallback; // { minute, vib }
   }, [aggAct, vibClientFallback]);
 
-  // ===== Comparativo A1×A2 agregado por minuto (|a|-1g, média a cada 60s) =====
+  // ===== Unidade e dados escalados (individual) =====
+  const vibRtUnit = useMemo<Unit>(() => {
+    const maxV = Math.max(0, ...vibRtPoints.map(p => Number(p.vib ?? 0)));
+    return pickUnit(maxV);
+  }, [vibRtPoints]);
+
+  const vibRtDisplay = useMemo(() => {
+    const u = vibRtUnit;
+    return vibRtPoints.map(p => ({
+      ...p,
+      vib_disp: scaleByUnit(Number(p.vib ?? 0), u),
+    }));
+  }, [vibRtPoints, vibRtUnit]);
+
+  // ===== Comparativo A1×A2 por minuto usando RMS (HPF) e grade comum UTC =====
   const comparePerMinute = useMemo(() => {
-    // agrega por minuto para A1
-    const aggA1 = new Map<string, { sum: number; n: number }>();
-    for (const p of mpuA1Data) {
-      const minute = toMinuteIsoUTC(new Date(p.ts));
-      const val = magMinusG(p.ax, p.ay, p.az);
-      const acc = aggA1.get(minute) ?? { sum: 0, n: 0 };
-      acc.sum += val; acc.n += 1;
-      aggA1.set(minute, acc);
-    }
-    // agrega por minuto para A2
-    const aggA2 = new Map<string, { sum: number; n: number }>();
-    for (const p of mpuA2Data) {
-      const minute = toMinuteIsoUTC(new Date(p.ts));
-      const val = magMinusG(p.ax, p.ay, p.az);
-      const acc = aggA2.get(minute) ?? { sum: 0, n: 0 };
-      acc.sum += val; acc.n += 1;
-      aggA2.set(minute, acc);
-    }
-    // une o conjunto de minutos e calcula média
-    const minutes = new Set<string>([
-      ...Array.from(aggA1.keys()),
-      ...Array.from(aggA2.keys()),
-    ]);
-    const rows: { minute: string; vibA1?: number; vibA2?: number }[] = [];
-    for (const m of minutes) {
-      const a1 = aggA1.get(m);
-      const a2 = aggA2.get(m);
+    // calcula RMS/minuto para A1 e A2 (em g)
+    const a1 = rmsByMinute(mpuA1Data); // [{minute, vib}]
+    const a2 = rmsByMinute(mpuA2Data);
+
+    if (!a1.length && !a2.length) return [];
+
+    // cria mapas para acesso rápido
+    const mapA1 = new Map(a1.map(r => [r.minute, r.vib]));
+    const mapA2 = new Map(a2.map(r => [r.minute, r.vib]));
+
+    // grade comum (UTC) entre o menor e maior minuto observado em ambos
+    const allKeys = [...new Set([...mapA1.keys(), ...mapA2.keys()])].sort();
+    const first = allKeys[0];
+    const last  = allKeys[allKeys.length - 1];
+
+    const startMs = Date.parse(first);
+    const endMs   = Date.parse(last);
+    const STEP = 60_000; // 60s
+
+    const rows: { minute: string; vibA1: number | null; vibA2: number | null }[] = [];
+    for (let t = startMs; t <= endMs; t += STEP) {
+      const minuteIso = new Date(t).toISOString(); // minuto exato UTC
       rows.push({
-        minute: m,
-        vibA1: a1 && a1.n ? a1.sum / a1.n : undefined,
-        vibA2: a2 && a2.n ? a2.sum / a2.n : undefined,
+        minute: minuteIso,
+        vibA1: mapA1.has(minuteIso) ? (mapA1.get(minuteIso) ?? null) : null,
+        vibA2: mapA2.has(minuteIso) ? (mapA2.get(minuteIso) ?? null) : null,
       });
     }
-    rows.sort((a, b) => a.minute.localeCompare(b.minute));
     return rows;
   }, [mpuA1Data, mpuA2Data]);
+
+  // ===== Unidade e dados escalados (comparativo) =====
+  const cmpUnit = useMemo<Unit>(() => {
+    const maxV = Math.max(
+      0,
+      ...comparePerMinute.map(p => Number(p.vibA1 ?? 0)),
+      ...comparePerMinute.map(p => Number(p.vibA2 ?? 0)),
+    );
+    return pickUnit(maxV);
+  }, [comparePerMinute]);
+
+  const compareDisplay = useMemo(() => {
+    const u = cmpUnit;
+    return comparePerMinute.map(p => ({
+      ...p,
+      vibA1_disp: p.vibA1 == null ? null : scaleByUnit(Number(p.vibA1), u),
+      vibA2_disp: p.vibA2 == null ? null : scaleByUnit(Number(p.vibA2), u),
+    }));
+  }, [comparePerMinute, cmpUnit]);
 
   /* ========================= UI ========================= */
   return (
@@ -258,7 +335,6 @@ const Analytics: React.FC = () => {
         <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           {/* título com tamanho levemente maior (ajuste de estilo) */}
           <CardTitle className="text-xl md:text-2xl">Análise de Desempenho</CardTitle>
-
           {/* Toggle com estilo um pouco mais “pill” (ajuste de estilo) */}
           <div className="inline-flex rounded-2xl bg-muted/40 p-1 border border-border/60">
             <button
@@ -322,9 +398,9 @@ const Analytics: React.FC = () => {
               <div className="h-64 sm:h-72 md:h-80 lg:h-[28rem]">
                 <ChartContainer config={{}}>
                   {optVib === "vib_runtime" ? (
-                    vibRtPoints.length ? (
+                    vibRtDisplay.length ? (
                       <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={vibRtPoints}>
+                        <LineChart data={vibRtDisplay}>
                           <CartesianGrid strokeDasharray="3 3" />
                           <XAxis
                             dataKey="minute"
@@ -337,9 +413,10 @@ const Analytics: React.FC = () => {
                             }
                           />
                           <YAxis
-                            dataKey="vib"
+                            dataKey="vib_disp"
+                            domain={[0, "auto"]}
                             label={{
-                              value: "Vibração (média/min) - 1g",
+                              value: `Vibração (média/min) [${unitSuffix(vibRtUnit)}]`,
                               angle: -90,
                               position: "insideLeft",
                             }}
@@ -353,17 +430,17 @@ const Analytics: React.FC = () => {
                                 hour12: false,
                               })
                             }
-                            formatter={(val: number, name) =>
-                              name === "vib"
-                                ? [`${val.toFixed(3)}`, "Vibração (avg) - 1g"]
-                                : [String(val), name]
-                            }
+                            formatter={(val: number, name) => {
+                              if (name === "vib_disp")
+                                return [`${Number(val).toFixed(3)}`, `Vibração (${unitSuffix(vibRtUnit)})`];
+                              return [String(val), name];
+                            }}
                           />
                           <Legend />
                           <Line
                             type="monotone"
-                            dataKey="vib"
-                            name={`Vibração A${act} (-1g)`}
+                            dataKey="vib_disp"
+                            name={`Vibração A${act}`}
                             stroke={act === 1 ? C.A1 : C.A2}
                             dot={false}
                             strokeWidth={2}
@@ -377,7 +454,7 @@ const Analytics: React.FC = () => {
                     )
                   ) : (
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={comparePerMinute}>
+                      <LineChart data={compareDisplay}>
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis
                           dataKey="minute"
@@ -389,7 +466,14 @@ const Analytics: React.FC = () => {
                             })
                           }
                         />
-                        <YAxis />
+                        <YAxis
+                          domain={[0, "auto"]}
+                          label={{
+                            value: `Vibração RMS (avg/min) [${unitSuffix(cmpUnit)}]`,
+                            angle: -90,
+                            position: "insideLeft",
+                          }}
+                        />
                         <Tooltip
                           content={<ChartTooltipContent />}
                           labelFormatter={(iso: string) =>
@@ -399,12 +483,17 @@ const Analytics: React.FC = () => {
                               hour12: false,
                             })
                           }
+                          formatter={(val: number | null, name) =>
+                            val == null
+                              ? ["—", name]
+                              : [`${Number(val).toFixed(3)}`, `${name} (${unitSuffix(cmpUnit)})`]
+                          }
                         />
                         <Legend />
                         <Line
                           type="monotone"
-                          dataKey="vibA1"
-                          name="Vib A1 (avg/min, |a|-1g)"
+                          dataKey="vibA1_disp"
+                          name="Vib A1 (RMS/min)"
                           stroke={C.A1}
                           dot={false}
                           strokeWidth={2}
@@ -412,8 +501,8 @@ const Analytics: React.FC = () => {
                         />
                         <Line
                           type="monotone"
-                          dataKey="vibA2"
-                          name="Vib A2 (avg/min, |a|-1g)"
+                          dataKey="vibA2_disp"
+                          name="Vib A2 (RMS/min)"
                           stroke={C.A2}
                           dot={false}
                           strokeWidth={2}
