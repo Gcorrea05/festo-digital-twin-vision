@@ -303,7 +303,7 @@ export default function ThreeDModel({ paused }: ThreeDModelProps) {
             }`}
             disabled={showCamera}
           >
-            Modelo 1
+            Atuador 1
           </button>
           <button
             onClick={() => (setSelectedId ? setSelectedId(2) : setLocalIdx(2))}
@@ -312,7 +312,7 @@ export default function ThreeDModel({ paused }: ThreeDModelProps) {
             }`}
             disabled={showCamera}
           >
-            Modelo 2
+            Atuador 2
           </button>
         </div>
       </div>

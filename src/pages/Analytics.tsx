@@ -344,7 +344,7 @@ const Analytics: React.FC = () => {
               ].join(" ")}
               onClick={() => setAct(1)}
             >
-              Modelo 1
+              Atuador 1
             </button>
             <button
               className={[
@@ -353,7 +353,7 @@ const Analytics: React.FC = () => {
               ].join(" ")}
               onClick={() => setAct(2)}
             >
-              Modelo 2
+              Atuador 2
             </button>
           </div>
         </CardHeader>

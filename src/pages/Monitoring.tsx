@@ -33,7 +33,7 @@ const Monitoring: React.FC = () => {
                     : "bg-transparent text-white/80 hover:text-white"
                 }`}
               >
-                Modelo 1
+                Atuador 1
               </button>
               <button
                 onClick={() => setModel(2)}
@@ -43,7 +43,7 @@ const Monitoring: React.FC = () => {
                     : "bg-transparent text-white/80 hover:text-white"
                 }`}
               >
-                Modelo 2
+                Atuador 2
               </button>
             </div>
 

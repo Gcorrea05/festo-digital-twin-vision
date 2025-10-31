@@ -431,15 +431,15 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
       {[
-        { title: "CPM (1 min)", value: cpm != null ? cpm.toFixed(1) : "—" },
+        { title: "Ciclos por minuto", value: cpm != null ? cpm.toFixed(1) : "—" },
         { title: "Sistema Ligado", value: systemText },
         {
-          title: "Vibration (overall)",
+          title: "Vibração",
           value: vibOverall != null ? `${(vibOverall-1).toFixed(3)} g` : "—",
         },
-        { title: "DTAbre (últ.)", value: fmtMs(tOpenMs) },
-        { title: "DTFecha (últ.)", value: fmtMs(tCloseMs) },
-        { title: "DTCiclo (últ.)", value: fmtMs(tCycleMs) },
+        { title: "Tempo para Abrir", value: fmtMs(tOpenMs) },
+        { title: "Tempo para Fechar", value: fmtMs(tCloseMs) },
+        { title: "Tempo do Ciclo", value: fmtMs(tCycleMs) },
       ].map((it) => (
         <Card key={it.title}>
           <CardHeader>
