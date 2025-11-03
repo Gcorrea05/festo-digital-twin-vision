@@ -11,11 +11,9 @@ const rootEl = document.getElementById("root")!;
 const root = ReactDOM.createRoot(rootEl);
 
 root.render(
-  <React.StrictMode>
-    <LiveProvider>
-      <ActuatorSelectionProvider>
-        <App />
-      </ActuatorSelectionProvider>
-    </LiveProvider>
-  </React.StrictMode>
+  <LiveProvider>
+    <ActuatorSelectionProvider>
+      <App />
+    </ActuatorSelectionProvider>
+  </LiveProvider>
 );

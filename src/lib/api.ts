@@ -1214,8 +1214,8 @@ function openWS(path: string, handlers: WSHandlers = {}, options: WSOptions = {}
 export function openLiveWS(handlers: WSHandlers): WSHandle {
   return openWS("/ws/live", handlers, {
     manageVisibility: true,
-    fallbackSnapshot: "live",
-    fallbackIntervalMs: 200,
+    fallbackSnapshot: null,   // removido: antes "live"
+    fallbackIntervalMs: 0,
     maxBackoffMs: 10000,
   });
 }
@@ -1223,8 +1223,8 @@ export function openLiveWS(handlers: WSHandlers): WSHandle {
 export function openMonitoringWS(handlers: WSHandlers): WSHandle {
   return openWS("/ws/monitoring", handlers, {
     manageVisibility: true,
-    fallbackSnapshot: "monitoring",
-    fallbackIntervalMs: 2000,
+    fallbackSnapshot: null,   // removido: antes "monitoring"
+    fallbackIntervalMs: 0,
     maxBackoffMs: 10000,
   });
 }
@@ -1232,8 +1232,8 @@ export function openMonitoringWS(handlers: WSHandlers): WSHandle {
 export function openSlowWS(handlers: WSHandlers): WSHandle {
   return openWS("/ws/slow", handlers, {
     manageVisibility: true,
-    fallbackSnapshot: null,
-    fallbackIntervalMs: 60000,
+    fallbackSnapshot: null,   // já não terá fallback
+    fallbackIntervalMs: 0,
     maxBackoffMs: 10000,
   });
 }
