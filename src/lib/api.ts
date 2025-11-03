@@ -1273,3 +1273,35 @@ export async function updateAlertsConfig(patch: Partial<AlertsConfig>): Promise<
     body: JSON.stringify(patch),
   });
 }
+
+// Adicione ao final de src/lib/api.ts
+export async function getActuatorsStateFastAbortable(signal?: AbortSignal): Promise<{
+  ts: string;
+  actuators: {
+    actuator_id: 1 | 2;
+    state: "RECUADO" | "AVANÇADO" | "DESCONHECIDO";
+    pending: "AV" | "REC" | null;
+    fault: string;
+    elapsed_ms: number;
+    started_at: string | null;
+  }[];
+}> {
+  try {
+    const snap = await fetchJson<any>("/api/live/snapshot", { signal });
+    const ts = String(snap?.ts ?? new Date().toISOString());
+    const items = Array.isArray(snap?.actuators) ? snap.actuators : [];
+    const actuators = items.map((a: any) => ({
+      actuator_id: Number(a.id ?? a.actuator_id),
+      state: (a.state ?? "DESCONHECIDO") as any,
+      pending: (a.pending ?? null) as any,
+      fault: (a.fault ?? "NONE") as any,
+      elapsed_ms: Number(a.elapsed_ms ?? 0),
+      started_at: a.started_at ?? null,
+    }));
+    return { ts, actuators };
+  } catch {
+    // Fallbacks legados se o snapshot não existir
+    return await getActuatorsStateFast();
+  }
+}
+
