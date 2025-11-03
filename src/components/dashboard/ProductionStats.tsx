@@ -9,22 +9,18 @@ import { Button } from "@/components/ui/button";
 import { getOPCHistory } from "@/lib/api";
 import { useOpcStream } from "@/hooks/useOpcStream";
 
-/** ============================
- *            KNOBS
- *  Edite aqui para ajustar rápido
- * ============================ */
+/** ============================ */
 const WINDOWS = {
-  week: "-168h",  // janela p/ produção semanal
-  cpm: "-60m",    // janela p/ CPM (60 min)
-  cycles: "-30m", // janela p/ tempos de ciclo
-  occ: "-60m",    // janela p/ ocupação
+  week: "-168h",
+  cpm: "-60m",
+  cycles: "-30m",
+  occ: "-60m",
 } as const;
 
-// se no futuro o backend trouxer defeitos, plugar aqui
 const USE_REJECTS_FROM_BACKEND = false;
 
 const STREAM_NAME = {
-  S2: (id: number) => `Avancado_${id}S2`, // ajuste padrão dos nomes
+  S2: (id: number) => `Avancado_${id}S2`,
   S1: (id: number) => `Recuado_${id}S1`,
 };
 
@@ -44,7 +40,7 @@ type CpmPoint = { t: string; cpm: number }; // t = "HH:MM"
 type CyclePoint = { idx: number; seconds: number };
 type PieItem = { name: string; value: number };
 
-// ---- Utils para normalizar resposta do backend ----
+/* ---------- helpers ---------- */
 function toNumValue(rec: any): number {
   if (rec?.value !== undefined) return Number(rec.value);
   if (rec?.value_bool !== undefined) return rec.value_bool ? 1 : 0;
@@ -60,24 +56,21 @@ const toMinuteKey = (d: Date) =>
   d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
 
 export default function ProductionStats() {
-  // ---- Atuador selecionável (AT1/AT2) ----
   const [actuatorId, setActuatorId] = useState<number>(1);
 
-  // ---- Estados para os gráficos ----
   const [week, setWeek] = useState<DayStat[]>([]);
   const [cpmSeries, setCpmSeries] = useState<CpmPoint[]>([]);
   const [cycleSeries, setCycleSeries] = useState<CyclePoint[]>([]);
   const [occupancy, setOccupancy] = useState<PieItem[]>([]);
 
-  // stream do S2 (AT{actuatorId}): Avancado_{id}S2
   const { last } = useOpcStream({ name: STREAM_NAME.S2(actuatorId) });
 
-  // referência ao último "rise" de S2 para calcular tempo de ciclo
   const lastRiseTsRef = useRef<number | null>(null);
 
-  // ---- Histórico semanal (produção = contagem de subidas de S2) ----
+  /* ---------- Semana (produção por dia via subidas S2) ---------- */
   async function loadWeek(id: number) {
-    const hist = await getOPCHistory({ actuatorId: id, facet: "S2", since: WINDOWS.week, asc: true });
+    const histRaw = await getOPCHistory({ actuatorId: id, facet: "S2", since: WINDOWS.week, asc: true });
+    const hist = Array.isArray(histRaw) ? histRaw : [];
     const byDay: Record<string, number> = {};
 
     for (let i = 1; i < hist.length; i++) {
@@ -85,7 +78,7 @@ export default function ProductionStats() {
       const curr = toNumValue(hist[i]);
       if (prev === 0 && curr === 1) {
         const d = new Date(toMs(hist[i]));
-        const key = d.toISOString().slice(0, 10); // YYYY-MM-DD
+        const key = d.toISOString().slice(0, 10);
         byDay[key] = (byDay[key] || 0) + 1;
       }
     }
@@ -98,20 +91,23 @@ export default function ProductionStats() {
       const name = d.toLocaleDateString(undefined, { weekday: "short" });
       days.push({
         name,
-        production: byDay[key] || 0,
-        rejects: USE_REJECTS_FROM_BACKEND ? Number((byDay[key] && 0) ?? 0) : 0,
+        production: Number(byDay[key] ?? 0),
+        rejects: USE_REJECTS_FROM_BACKEND ? Number(byDay[key] ?? 0) : 0,
       });
     }
     setWeek(days);
   }
 
-  // ---- CPM (últimos 60 min): agrega subidas por minuto ----
+  /* ---------- CPM (últimos 60 min) ---------- */
   async function loadCpm(id: number) {
-    const hist = await getOPCHistory({ actuatorId: id, facet: "S2", since: WINDOWS.cpm, asc: true });
+    const histRaw = await getOPCHistory({ actuatorId: id, facet: "S2", since: WINDOWS.cpm, asc: true });
+    const hist = Array.isArray(histRaw) ? histRaw : [];
+
     const now = Date.now();
     const start = now - 60 * 60 * 1000;
-    const buckets = new Map<string, number>(); // minute -> count
+    const buckets: Map<string, number> = new Map();
 
+    // prepara os 60 minutos
     for (let i = 59; i >= 0; i--) {
       const t = new Date(now - i * 60000);
       buckets.set(toMinuteKey(t), 0);
@@ -124,40 +120,49 @@ export default function ProductionStats() {
         const ts = toMs(hist[i]);
         if (ts >= start) {
           const key = toMinuteKey(new Date(ts));
-          buckets.set(key, (buckets.get(key) || 0) + 1);
+          const prevVal = buckets.get(key) ?? 0;
+          buckets.set(key, prevVal + 1);
         }
       }
     }
 
-    setCpmSeries(Array.from(buckets.entries()).map(([t, cpm]) => ({ t, cpm })));
+    // 🔧 força o tipo CpmPoint em cada item do array
+    const arr: CpmPoint[] = Array.from(buckets.entries()).map(([t, cpm]): CpmPoint => ({
+      t: String(t),
+      cpm: Number.isFinite(cpm) ? Number(cpm) : 0,
+    }));
+    setCpmSeries(arr);
   }
 
-  // ---- Tempo de ciclo: delta entre subidas consecutivas de S2 ----
+  /* ---------- Tempo de ciclo (delta entre subidas de S2) ---------- */
   async function loadCycleTimes(id: number) {
-    const hist = await getOPCHistory({ actuatorId: id, facet: "S2", since: WINDOWS.cycles, asc: true });
+    const histRaw = await getOPCHistory({ actuatorId: id, facet: "S2", since: WINDOWS.cycles, asc: true });
+    const hist = Array.isArray(histRaw) ? histRaw : [];
     const rises: number[] = [];
+
     for (let i = 1; i < hist.length; i++) {
       const prev = toNumValue(hist[i - 1]);
       const curr = toNumValue(hist[i]);
-      if (prev === 0 && curr === 1) {
-        rises.push(toMs(hist[i]));
-      }
+      if (prev === 0 && curr === 1) rises.push(toMs(hist[i]));
     }
+
     const series: CyclePoint[] = [];
     for (let i = 1; i < rises.length; i++) {
-      const dt = (rises[i] - rises[i - 1]) / 1000;
-      series.push({ idx: i, seconds: dt });
+      const dtSec = (rises[i] - rises[i - 1]) / 1000;
+      series.push({ idx: i, seconds: Number.isFinite(dtSec) ? dtSec : 0 });
     }
     if (rises.length) lastRiseTsRef.current = rises[rises.length - 1];
-    setCycleSeries(series.slice(-120)); // limita últimas 120 medidas
+    setCycleSeries(series.slice(-120));
   }
 
-  // ---- Ocupação (última 1h): integra tempos em S1=1, S2=1, TRANSIÇÃO ----
+  /* ---------- Ocupação (última 1h) ---------- */
   async function loadOccupancy(id: number) {
-    const [h1, h2] = await Promise.all([
+    const [h1Raw, h2Raw] = await Promise.all([
       getOPCHistory({ actuatorId: id, facet: "S1", since: WINDOWS.occ, asc: true }),
       getOPCHistory({ actuatorId: id, facet: "S2", since: WINDOWS.occ, asc: true }),
     ]);
+    const h1 = Array.isArray(h1Raw) ? h1Raw : [];
+    const h2 = Array.isArray(h2Raw) ? h2Raw : [];
 
     const now = Date.now();
     const start = now - 60 * 60 * 1000;
@@ -199,7 +204,7 @@ export default function ProductionStats() {
     ]);
   }
 
-  // ---- Efeitos: carga inicial e quando troca atuador ----
+  /* ---------- Efeitos ---------- */
   useEffect(() => {
     loadWeek(actuatorId);
     loadCpm(actuatorId);
@@ -208,43 +213,52 @@ export default function ProductionStats() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actuatorId]);
 
-  // ---- Efeito: stream -> atualizações em (quase) tempo real ----
+  // stream -> atualizações
   useEffect(() => {
     if (last?.value_bool === true) {
       const now = new Date();
-      const minKey = toMinuteKey(now);
+      const minKey: string = toMinuteKey(now); // 🔧 garante string
 
-      // 1) incrementa CPM no minuto atual
-      setCpmSeries((old) => {
-        const copy = [...old];
+      // 1) CPM
+      setCpmSeries((old): CpmPoint[] => {
+        const copy: CpmPoint[] = [...old];
         const idx = copy.findIndex((p) => p.t === minKey);
-        if (idx >= 0) copy[idx] = { ...copy[idx], cpm: copy[idx].cpm + 1 };
-        else copy.push({ t: minKey, cpm: 1 });
+        if (idx >= 0) {
+          const prev = copy[idx]; // CpmPoint garantido
+          copy[idx] = { t: prev.t, cpm: prev.cpm + 1 }; // 🔧 mantém t explícito
+        } else {
+          const next: CpmPoint = { t: minKey, cpm: 1 }; // 🔧 tipado
+          copy.push(next);
+        }
         return copy.slice(-60);
       });
 
-      // 2) incrementa produção do dia atual (semana)
+      // 2) Semana (dia atual)
       setWeek((old) => {
         const todayName = now.toLocaleDateString(undefined, { weekday: "short" });
-        return old.map((d) => (d.name === todayName ? { ...d, production: d.production + 1 } : d));
+        return old.map((d) =>
+          d.name === todayName ? { ...d, production: d.production + 1 } : d
+        );
       });
 
-      // 3) tempo de ciclo
+      // 3) Tempo de ciclo
       const tsNow = now.getTime();
-      if (lastRiseTsRef.current) {
-        const dt = (tsNow - lastRiseTsRef.current) / 1000;
-        setCycleSeries((old) =>
-          [...old, { idx: (old[old.length - 1]?.idx ?? 0) + 1, seconds: dt }].slice(-120)
-        );
+      const lastRise = lastRiseTsRef.current;
+      if (typeof lastRise === "number") {
+        const dt = (tsNow - lastRise) / 1000;
+        setCycleSeries((old) => {
+          const lastIdx = old.length > 0 ? old[old.length - 1]!.idx : 0;
+          return [...old, { idx: lastIdx + 1, seconds: Number.isFinite(dt) ? dt : 0 }].slice(-120);
+        });
       }
       lastRiseTsRef.current = tsNow;
 
-      // 4) ocupação: recarrega (rápido)
+      // 4) Ocupação (recarrega rápido)
       loadOccupancy(actuatorId);
     }
   }, [last, actuatorId]);
 
-  // ---- CSV exports ----
+  /* ---------- CSV ---------- */
   function downloadCsv(filename: string, rows: any[], headers?: string[]) {
     const cols = headers ?? (rows.length ? Object.keys(rows[0]) : []);
     const escape = (v: any) => `"${String(v ?? "").replace(/"/g, '""')}"`;
@@ -316,7 +330,7 @@ export default function ProductionStats() {
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="name" interval="preserveStartEnd" minTickGap={12} tickMargin={8} />
               <YAxis />
-              <Tooltip formatter={(v, n) => [`${v} units`, n === "production" ? "Production" : "Rejects"]} />
+              <Tooltip />
               <Legend wrapperStyle={{ display: "none" }} />
               <Bar dataKey="production" name="Production" fill={COLORS.sky} />
               <Bar dataKey="rejects" name="Defects" fill={COLORS.orange} />
@@ -324,7 +338,7 @@ export default function ProductionStats() {
           </ResponsiveContainer>
         </div>
 
-        {/* 2) CPM por minuto (últimos 60 min) */}
+        {/* 2) CPM (60 min) */}
         <div className="min-w-0 w-full h-64 sm:h-72 md:h-80 lg:h-[28rem]">
           <h3 className="text-base font-medium mb-2">CPM (last 60 min) — AT{actuatorId}</h3>
           <ResponsiveContainer width="100%" height="100%">
@@ -358,7 +372,7 @@ export default function ProductionStats() {
           </ResponsiveContainer>
         </div>
 
-        {/* 4) Ocupação de estados */}
+        {/* 4) Ocupação */}
         <div className="min-w-0 w-full h-64 sm:h-72 md:h-80 lg:h-[28rem]">
           <h3 className="text-base font-medium mb-2">
             State Occupancy (last 1h) — AT{actuatorId}
@@ -371,7 +385,10 @@ export default function ProductionStats() {
                 innerRadius={60} outerRadius={85}
                 paddingAngle={2}
                 dataKey="value"
-                label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                label={({ name, percent }) => {
+                  const p = Number(percent ?? 0) * 100;
+                  return `${name}: ${p.toFixed(0)}%`;
+                }}
               >
                 {occupancy.map((_, i) => (
                   <Cell key={i} fill={occColors[i % occColors.length]} />
@@ -380,12 +397,12 @@ export default function ProductionStats() {
               <div className="hidden sm:block">
                 <Legend />
               </div>
-              <Tooltip formatter={(v) => [`${v}%`, "Percent"]} />
+              <Tooltip />
             </PieChart>
           </ResponsiveContainer>
         </div>
 
-        {/* 5) Quality pie (placeholder até termos rejects reais) */}
+        {/* 5) Quality (placeholder) */}
         <div className="min-w-0 w-full h-64 sm:h-72 md:h-80 lg:h-[28rem] xl:col-span-2">
           <h3 className="text-base font-medium mb-2">Quality Overview</h3>
           <ResponsiveContainer width="100%" height="100%">
@@ -396,7 +413,10 @@ export default function ProductionStats() {
                 innerRadius={60} outerRadius={85}
                 paddingAngle={2}
                 dataKey="value"
-                label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                label={({ name, percent }) => {
+                  const p = Number(percent ?? 0) * 100;
+                  return `${name}: ${p.toFixed(0)}%`;
+                }}
               >
                 {qualityPie.map((_, i) => (
                   <Cell key={i} fill={pieColors[i % pieColors.length]} />
@@ -405,7 +425,7 @@ export default function ProductionStats() {
               <div className="hidden sm:block">
                 <Legend />
               </div>
-              <Tooltip formatter={(v) => [`${v} units`, ""]} />
+              <Tooltip />
             </PieChart>
           </ResponsiveContainer>
         </div>

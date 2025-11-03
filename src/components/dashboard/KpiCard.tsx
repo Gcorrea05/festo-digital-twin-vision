@@ -1,17 +1,30 @@
+// src/components/dashboard/LiveMetricsCard.tsx
 import React, { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useLive } from "@/context/LiveContext";
 
-function stateFromFacets(facets?: { S1: 0 | 1; S2: 0 | 1 }): "ABERTO" | "RECUADO" | "—" {
-  if (!facets) return "—";
-  const { S1, S2 } = facets;
-  if (S1 === 1 && S2 === 0) return "RECUADO";
-  if (S2 === 1 && S1 === 0) return "ABERTO";
-  return "—"; // remove outros estados
+/** Converte flags estáveis em rótulo simples */
+function stateFromFlags(recuado?: unknown, avancado?: unknown): "ABERTO" | "RECUADO" | "—" {
+  const r = recuado === 1 || recuado === true;
+  const a = avancado === 1 || avancado === true;
+  if (r && !a) return "RECUADO";
+  if (a && !r) return "ABERTO";
+  return "—";
 }
 
-/** Formata ms => "Xd HH:MM:SS" ou "HH:MM:SS" */
+/** Deduz rótulo exibido a partir do objeto do atuador (compat com shapes legados) */
+function labelFromActuator(a: any): "ABERTO" | "RECUADO" | "—" {
+  // 1) preferir campo textual `state` quando houver
+  const st = String(a?.state ?? "").toUpperCase();
+  if (st.includes("RECU")) return "RECUADO";
+  if (st.includes("AVAN")) return "ABERTO";
+
+  // 2) fallback para flags (recuado/avancado) se existirem
+  return stateFromFlags(a?.recuado, a?.avancado);
+}
+
+/** Formata ms => "Xd HH:MM:SS" ou "HH:MM:SS" (aqui usamos só se um dia vier runtime de sistema) */
 function formatDuration(ms?: number) {
   if (!Number.isFinite(ms as number) || (ms as number) < 0) return "—";
   const totalSec = Math.floor((ms as number) / 1000);
@@ -26,36 +39,22 @@ function formatDuration(ms?: number) {
 }
 
 export default function LiveMetricsCard() {
-  const { snapshot } = useLive();
+  const { snapshot } = useLive(); // tipo: { ts: string|null; actuators: LiveActuator[]; mpu: LiveMPU[]; }
 
-  const selectedIds = useMemo<(1 | 2)[]>(() => {
-    const sel = snapshot?.selectedActuator;
-    if (sel === 1 || sel === 2) return [sel];
-    return [1, 2]; // se nada selecionado no 3D, mostra os dois
-  }, [snapshot?.selectedActuator]);
-
+  // Exibimos os atuadores que vierem no snapshot (sem depender de selectedActuator)
   const rows = useMemo(() => {
-    const list = snapshot?.actuators ?? [];
-    return selectedIds
-      .map((id) => list.find((a) => a.id === id))
-      .filter(Boolean)
-      .map((a) => ({
-        id: a!.id as 1 | 2,
-        state: stateFromFacets(a!.facets),
+    const list = Array.isArray(snapshot?.actuators) ? snapshot!.actuators : [];
+    return list
+      .filter((a: any) => a && (a.id === 1 || a.id === 2))
+      .map((a: any) => ({
+        id: a.id as 1 | 2,
+        state: labelFromActuator(a),
       }));
-  }, [snapshot?.actuators, selectedIds]);
+  }, [snapshot?.actuators]);
 
-  const systemText = useMemo(() => {
-    const s = String(snapshot?.system?.status ?? "—").toLowerCase();
-    if (s === "ok") return "OK";
-    if (s === "degraded") return "DEGRADED";
-    if (s === "down" || s === "offline") return "OFFLINE";
-    return "…";
-  }, [snapshot?.system?.status]);
-
-  const runtimeText = useMemo(() => {
-    return formatDuration(snapshot?.system?.runtime_ms);
-  }, [snapshot?.system?.runtime_ms]);
+  // Como o shape atual não expõe `system`, mostramos "—"
+  const systemText = "—";
+  const runtimeText = "—"; // se futuramente vier runtime_ms, basta trocar por formatDuration(runtime_ms)
 
   return (
     <Card>
@@ -67,7 +66,6 @@ export default function LiveMetricsCard() {
           <div className="text-muted-foreground">System</div>
           <div className="font-medium">{systemText}</div>
 
-          {/* Substituição: de "Total de Ciclos" para "Runtime" */}
           <div className="text-muted-foreground">Runtime</div>
           <div className="font-medium">{runtimeText}</div>
         </div>
@@ -78,14 +76,13 @@ export default function LiveMetricsCard() {
             {rows.map((r) => (
               <div key={r.id} className="flex items-center gap-3">
                 <div className="w-12 text-xs font-semibold">AT{r.id}:</div>
-                {/* só uma tag com ABERTO/RECUADO/— */}
                 <Badge variant="secondary" className="uppercase">
                   {r.state}
                 </Badge>
               </div>
             ))}
             {rows.length === 0 && (
-              <div className="text-xs text-muted-foreground">Nenhum atuador selecionado.</div>
+              <div className="text-xs text-muted-foreground">Nenhum atuador disponível.</div>
             )}
           </div>
         </div>

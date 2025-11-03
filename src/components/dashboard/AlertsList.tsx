@@ -6,8 +6,19 @@ import { Badge } from "@/components/ui/badge";
 import { useAlerts } from "@/hooks/useAlerts";
 import type { AlertItem } from "@/lib/api";
 
-function getSeverityIcon(severity: AlertItem["severity"]) {
-  switch (severity) {
+// Nosso backend usa severidade numérica (1..5). Vamos padronizar em 3 faixas.
+type SevLabel = "info" | "warning" | "critical";
+
+function sevToLabel(sev: unknown): SevLabel {
+  const s = Number(sev ?? 0);
+  if (s >= 4) return "critical";
+  if (s >= 3) return "warning";
+  return "info";
+}
+
+function getSeverityIcon(severity: unknown) {
+  const label = sevToLabel(severity);
+  switch (label) {
     case "warning":
       return <AlertTriangle className="h-4 w-4 mr-2 text-yellow-500" />;
     case "critical":
@@ -18,8 +29,10 @@ function getSeverityIcon(severity: AlertItem["severity"]) {
   }
 }
 
-function timeAgo(timestamp: string) {
-  const date = new Date(timestamp);
+function timeAgo(isoOrDate: string | Date | null | undefined) {
+  if (!isoOrDate) return "Just now";
+  const date = typeof isoOrDate === "string" ? new Date(isoOrDate) : isoOrDate;
+  if (Number.isNaN(date.getTime())) return "Just now";
   const now = new Date();
   const diff = now.getTime() - date.getTime();
   const seconds = Math.floor(diff / 1000);
@@ -55,18 +68,32 @@ const AlertsList: React.FC = () => {
 
         {!loading && !error && items && items.length > 0 && (
           <ul className="divide-y divide-border">
-            {items.map((alert: AlertItem) => (
-              <li key={alert.id} className="flex items-center px-4 py-3">
-                {getSeverityIcon(alert.severity)}
-                <div className="flex-1">
-                  <p className="text-sm font-medium">{alert.message}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {timeAgo(alert.timestamp)}
-                  </p>
-                </div>
-                <Badge variant="secondary">{alert.severity}</Badge>
-              </li>
-            ))}
+            {items.map((alert: AlertItem) => {
+              const label = sevToLabel((alert as any)?.severity);
+              // backend expõe "ts" (ISO). "timestamp" não existe.
+              const ts =
+                (alert as any)?.ts ??
+                (alert as any)?.created_at ??
+                (alert as any)?.time ??
+                null;
+
+              return (
+                <li key={String((alert as any)?.id ?? `${alert.code}-${ts}`)} className="flex items-center px-4 py-3">
+                  {getSeverityIcon((alert as any)?.severity)}
+                  <div className="flex-1">
+                    <p className="text-sm font-medium">
+                      {(alert as any)?.message ?? (alert as any)?.code ?? "Alert"}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {timeAgo(ts)}
+                    </p>
+                  </div>
+                  <Badge variant={label === "critical" ? "destructive" : "secondary"}>
+                    {label}
+                  </Badge>
+                </li>
+              );
+            })}
           </ul>
         )}
       </CardContent>

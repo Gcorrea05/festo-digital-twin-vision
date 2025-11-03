@@ -55,11 +55,22 @@ export function useMpuIds(pollMs = 30000) {
     const tick = async () => {
       try {
         if (first) setLoading(true);
-        const list = await apiGetMpuIds();
+        const raw: unknown = await apiGetMpuIds();
+
+        // Aceita array puro (["MPUA1", "MPUA2"]) ou objeto { ids: [...] }
+        const rawList: unknown[] =
+          Array.isArray(raw)
+            ? raw
+            : (raw && typeof raw === "object" && Array.isArray((raw as any).ids))
+              ? ((raw as any).ids as unknown[])
+              : [];
+
+        // Converte com tipo explícito -> string[]
+        const asStrings: string[] = Array.from(
+          new Set(rawList.map((v) => String(v)))
+        ).sort();
+
         if (!cancelled) {
-          const asStrings = Array.isArray(list)
-            ? Array.from(new Set(list.map((v) => String(v)))).sort()
-            : [];
           setIds(asStrings);
           setError(null);
         }

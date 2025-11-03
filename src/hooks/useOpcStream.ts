@@ -1,3 +1,4 @@
+// src/hooks/useOpcStream.ts
 // Polling-only (sem WebSocket) – compatível com ProductionStats e ThreeDModel.
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -40,15 +41,16 @@ function coerceBool(raw: any): boolean | undefined {
 }
 
 export function useOpcStream(opts?: Options) {
-  const name = opts?.name?.trim();
+  const name = opts?.name?.trim() || "";
   const pollMs = Math.max(200, opts?.pollMs ?? 500);
 
   const [connected, setConnected] = useState(false);
   const [last, setLast] = useState<OpcEvent | null>(null);
 
   const byNameRef = useRef<Record<string, OpcEvent>>({});
-  const timerRef = useRef<number | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const aliveRef = useRef(true);
+  const inFlight = useRef<AbortController | null>(null);
 
   useEffect(() => {
     aliveRef.current = true;
@@ -56,12 +58,23 @@ export function useOpcStream(opts?: Options) {
   }, []);
 
   useEffect(() => {
-    if (!name) {
+    // SSR safe: sem window não tem polling
+    if (typeof window === "undefined") {
       setConnected(false);
       setLast(null);
       return;
     }
 
+    if (!name) {
+      setConnected(false);
+      setLast(null);
+      // cancela quaisquer pendências
+      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+      if (inFlight.current) { inFlight.current.abort(); inFlight.current = null; }
+      return;
+    }
+
+    // limpa timer anterior (se houver)
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
@@ -69,10 +82,14 @@ export function useOpcStream(opts?: Options) {
 
     const tick = async () => {
       try {
-        // getOPCHistoryByName possui assinatura posicional
-        // (name: string, since = "-10m", asc = true, limit = 20000)
-        const payload = await getOPCHistoryByName(name, "-10s", true, 200)
-          .catch(() => []);
+        // garante uma requisição por vez
+        if (inFlight.current) inFlight.current.abort();
+        const ac = new AbortController();
+        inFlight.current = ac;
+
+        // getOPCHistoryByName: (name: string, since="-10m", asc=true, limit=20000)
+        const payload = await getOPCHistoryByName(name, "-10s", true, 200).catch(() => []);
+        if (!aliveRef.current) return;
 
         const rows = rowsFromPayload(payload);
         if (rows.length) {
@@ -119,23 +136,27 @@ export function useOpcStream(opts?: Options) {
           };
 
           byNameRef.current[name] = evt;
-          if (aliveRef.current) setLast(evt);
+          setLast(evt);
+          setConnected(true);
+        } else {
+          // resposta válida porém vazia -> sem evento novo
+          setConnected(false);
         }
-
-        if (aliveRef.current) setConnected(true);
       } catch {
         if (aliveRef.current) setConnected(false);
       } finally {
+        inFlight.current = null;
         if (aliveRef.current) {
-          timerRef.current = window.setTimeout(tick, pollMs) as unknown as number;
+          timerRef.current = setTimeout(tick, pollMs);
         }
       }
     };
 
-    tick();
+    // dispara primeiro ciclo
+    void tick();
     return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = null;
+      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+      if (inFlight.current) { inFlight.current.abort(); inFlight.current = null; }
     };
   }, [name, pollMs]);
 

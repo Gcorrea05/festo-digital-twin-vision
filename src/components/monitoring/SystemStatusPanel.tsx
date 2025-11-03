@@ -6,7 +6,7 @@ import { CheckCircle2, XCircle, HelpCircle } from "lucide-react";
 
 type Sev = "operational" | "down" | "unknown";
 
-// ===== UI helpers (padrão moderado) =====
+/* ================= UI helpers ================= */
 function pill(sev: Sev) {
   const base =
     "inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xl font-extrabold tracking-wide";
@@ -32,35 +32,48 @@ function pill(sev: Sev) {
   }
 }
 
-// ===== Freshness =====
-const FRESH_MS = 5000;
+/* ================= Freshness model =================
+   Derivamos saúde pelo frescor do pacote "live":
+   - ts <= 2s: operational
+   - ts <= 10s: unknown (degraded)
+   - >10s     : down
+*/
+const OK_MS = 2000;
+const DEG_MS = 10000;
 
-function isFresh(ts?: string | number, now = Date.now(), freshMs = FRESH_MS) {
-  if (!ts) return false;
-  const t = typeof ts === "string" ? Date.parse(ts) : ts;
-  return Number.isFinite(t) && now - t <= freshMs;
+function sevFromTs(ts?: string | null, nowMs = Date.now()): Sev {
+  if (!ts) return "unknown";
+  const t = Date.parse(ts);
+  if (!Number.isFinite(t)) return "unknown";
+  const age = nowMs - t;
+  if (age <= OK_MS) return "operational";
+  if (age <= DEG_MS) return "unknown";
+  return "down";
 }
 
 const SystemStatusPanel: React.FC = () => {
   const { snapshot } = useLive();
   const now = Date.now();
 
-  const overall = useMemo<Sev>(() => {
-    const s = String(snapshot?.system?.status ?? "unknown").toLowerCase();
-    if (s === "ok") return "operational";
-    if (s === "offline" || s === "down") return "down";
-    return "unknown";
-  }, [snapshot?.system?.status]);
+  // Overall: só pelo frescor do pacote "live"
+  const overall = useMemo<Sev>(() => sevFromTs(snapshot?.ts, now), [snapshot?.ts, now]);
 
+  // Actuators: precisa ter lista e o pacote estar fresco
   const actuatorsSev: Sev = useMemo(() => {
-    const arr = snapshot?.actuators ?? [];
-    if (!arr.length) return "down";
-    const anyFresh = arr.some((a) => isFresh(a.ts, now));
-    return anyFresh ? "operational" : "down";
-  }, [snapshot?.actuators, now]);
+    const hasData = (snapshot?.actuators || []).length > 0;
+    if (!hasData) return "down";
+    return sevFromTs(snapshot?.ts, now);
+  }, [snapshot?.actuators, snapshot?.ts, now]);
 
-  const sensorsSev: Sev = actuatorsSev;
-  const transmissionSev: Sev = actuatorsSev;
+  // Sensors: usamos MPUs como proxy (se vier RMS, há ingestão de sensores)
+  const sensorsSev: Sev = useMemo(() => {
+    const hasMPU = (snapshot?.mpu || []).length > 0;
+    if (!hasMPU) return "down";
+    return sevFromTs(snapshot?.ts, now);
+  }, [snapshot?.mpu, snapshot?.ts, now]);
+
+  // Transmission: se o pacote chega fresco, o WS está ok
+  const transmissionSev: Sev = useMemo(() => sevFromTs(snapshot?.ts, now), [snapshot?.ts, now]);
 
   const Row = ({ label, sev }: { label: string; sev: Sev }) => {
     const p = pill(sev);
@@ -96,6 +109,11 @@ const SystemStatusPanel: React.FC = () => {
               {overallPill.label}
             </span>
           </div>
+          {snapshot?.ts && (
+            <div className="text-xs text-zinc-400 mt-1">
+              last: {new Date(snapshot.ts).toLocaleTimeString()}
+            </div>
+          )}
         </div>
 
         <div className="space-y-4 pt-2">

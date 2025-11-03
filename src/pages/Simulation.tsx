@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState, useRef } from "react";
+// src/pages/Simulation.tsx
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import ThreeDModel from "@/components/dashboard/ThreeDModel";
 import { fetchJson, postJson } from "@/lib/api";
 import {
@@ -160,8 +161,8 @@ export default function Simulation() {
       <div className="mx-auto w-full max-w-screen-2xl px-6 md:px-8 pb-12">
         {/* Título + Subtítulo padronizados */}
         <header className="mb-6">
-          <h1>Simulation</h1>
-          <p className="page-subtitle">Execute cenários de falha e visualize o efeito no modelo 3D.</p>
+          <h1 className="text-3xl md:text-4xl font-extrabold leading-tight">Simulation</h1>
+          <p className="text-muted-foreground">Execute cenários de falha e visualize o efeito no modelo 3D.</p>
         </header>
 
         <Card>
@@ -184,19 +185,17 @@ export default function Simulation() {
               <div className="flex flex-col">
                 <select
                   className={[
-                    // ⬆️ fonte ainda maior + contraste
                     "rounded-xl px-4 py-2.5 text-lg min-w-80",
                     "bg-slate-800 text-slate-100 placeholder-slate-400",
                     "border border-sky-500/80 shadow focus:outline-none focus:ring-2 focus:ring-sky-400 focus:border-sky-400",
-                    // força dark nos menus nativos
-                    "[color-scheme:dark]"
+                    "[color-scheme:dark]",
                   ].join(" ")}
                   value={selectedCode}
                   onChange={(e) => {
                     setSelectedCode(e.target.value);
                     setScenario(null);
-                    setPaused3D(true); // volta pausado
-                    setModelKey((k) => k + 1); // RESET: retorna à pose inicial
+                    setPaused3D(true);           // volta pausado
+                    setModelKey((k) => k + 1);   // RESET: retorna à pose inicial
                   }}
                 >
                   <option value="" disabled>
@@ -220,7 +219,7 @@ export default function Simulation() {
 
                 {catError && (
                   <div className="mt-1 text-base text-amber-300">
-                    Falha ao carregar do servidor — usando lista local.{" "}
+                    Falha ao carregar do servidor.{" "}
                     <button className="underline" onClick={() => void loadCatalog()}>
                       Tentar novamente
                     </button>
@@ -240,7 +239,15 @@ export default function Simulation() {
         </Card>
 
         {/* POP-UP padronizado */}
-        <Dialog open={openDlg} onOpenChange={setOpenDlg}>
+        <Dialog
+          open={openDlg}
+          onOpenChange={(open) => {
+            setOpenDlg(open);
+            if (!open) {
+              setPaused3D(true);
+            }
+          }}
+        >
           <DialogContent className="sm:max-w-lg bg-slate-900 text-slate-100 border border-slate-700">
             {scenario && (
               <>

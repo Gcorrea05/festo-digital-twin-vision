@@ -1,12 +1,12 @@
 // src/hooks/useActuatorPeakDriver.ts
 import { useEffect, useRef } from "react";
-import { useLive, type StableState } from "@/context/LiveContext";
+import { useLive } from "@/context/LiveContext";
+
+// === Tipos locais (espelham o LiveContext) ===
+type StableStateLocal = "RECUADO" | "AVANÇADO" | "DESCONHECIDO";
 
 /**
- * API mínima esperada do driver de animação do seu componente visual.
- * - playUp():   anima de ABERTO(AVANÇADO) até o PICO(RECUADO)
- * - playDown(): anima do PICO(RECUADO) de volta para ABERTO(AVANÇADO)
- * - setAtPeak(): opcional, força o estado visual de pico (sem animar)
+ * API mínima esperada do driver de animação.
  */
 export type PeakDriver = {
   playUp: () => void;
@@ -14,60 +14,60 @@ export type PeakDriver = {
   setAtPeak?: (v: boolean) => void;
 };
 
-type InitOrState = "INIT" | StableState;
+type InitOrState = "INIT" | StableStateLocal;
 
 /**
- * Conecta o estado do /ws/live à sua animação de pico.
- * Regras:
- * - Visual inicia em ABERTO (equivale a AVANÇADO) e parado.
- * - Quando estado mudar para RECUADO -> dispara playUp() (sobe para o pico).
- * - Quando estado voltar para AVANÇADO -> dispara playDown() (desce do pico).
- * - Não reproduz passado: se a 1ª leitura já vier RECUADO, apenas marca "atPeak".
+ * Conecta o estado do /ws/live à animação de pico do atuador.
  */
-export function useActuatorPeakDriver(
-  actuatorId: 1 | 2,
-  anim: PeakDriver
-) {
+export function useActuatorPeakDriver(actuatorId: 1 | 2, anim: PeakDriver) {
   const { snapshot } = useLive();
+
+  // estados internos estáveis
   const prevStateRef = useRef<InitOrState>("INIT");
   const atPeakRef = useRef(false);
 
+  // evita recriação de deps por objeto anim novo a cada render
+  const animRef = useRef(anim);
+  useEffect(() => {
+    animRef.current = anim;
+  }, [anim]);
+
   useEffect(() => {
     const act = snapshot?.actuators?.find((a) => a.id === actuatorId);
-    if (!act) return;
+    const curr = act?.state as StableStateLocal | undefined;
+    if (!curr) return; // ainda sem estado
 
-    const curr = act.state as StableState;
     const prev = prevStateRef.current;
 
-    // 1ª passada: assume visual aberto (AVANÇADO), sem animar
+    // boot: posiciona sem animar
     if (prev === "INIT") {
       prevStateRef.current = curr;
       const alreadyAtPeak = curr === "RECUADO";
       atPeakRef.current = alreadyAtPeak;
-      anim.setAtPeak?.(alreadyAtPeak); // só posiciona; sem animação
+      animRef.current.setAtPeak?.(alreadyAtPeak);
       return;
     }
 
-    if (curr === prev) return; // sem mudança
+    if (curr === prev) return; // sem mudança real
 
-    // AVANÇADO -> RECUADO: começo do pico
+    // AVANÇADO -> RECUADO: subir para pico
     if (prev !== "RECUADO" && curr === "RECUADO") {
       if (!atPeakRef.current) {
-        anim.playUp();
+        try { animRef.current.playUp(); } catch {}
         atPeakRef.current = true;
-        anim.setAtPeak?.(true);
+        animRef.current.setAtPeak?.(true);
       }
     }
 
-    // RECUADO -> AVANÇADO: fim do pico
+    // RECUADO -> AVANÇADO: descer do pico
     if (prev === "RECUADO" && curr === "AVANÇADO") {
       if (atPeakRef.current) {
-        anim.playDown();
+        try { animRef.current.playDown(); } catch {}
         atPeakRef.current = false;
-        anim.setAtPeak?.(false);
+        animRef.current.setAtPeak?.(false);
       }
     }
 
     prevStateRef.current = curr;
-  }, [snapshot, actuatorId, anim]);
+  }, [snapshot, actuatorId]);
 }

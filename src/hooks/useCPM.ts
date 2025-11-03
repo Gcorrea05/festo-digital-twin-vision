@@ -1,10 +1,16 @@
 // src/hooks/useCpm.ts
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getCpmRuntimeMinute, CpmMinutePoint } from "@/lib/api";
+import { getCpmRuntimeMinute } from "@/lib/api";
+
+// Tipo mínimo local (a API só precisa fornecer ts e cpm)
+type CpmMinutePoint = {
+  ts: string;
+  cpm: number;
+};
 
 export function useCpmRuntime(opts?: {
   actuatorId?: number;
-  minutes?: number; // janela rápida (padrão 120)
+  minutes?: number; // janela (padrão 120)
 }) {
   const { actuatorId, minutes = 120 } = opts || {};
   const [data, setData] = useState<CpmMinutePoint[]>([]);
@@ -14,23 +20,44 @@ export function useCpmRuntime(opts?: {
 
   useEffect(() => {
     let alive = true;
+
     (async () => {
       try {
         setLoading(true);
         setErr(null);
-        // garante que só 1 fetch esteja ativo
+
+        // Cancela requisição anterior, se houver
         if (inFlight.current) inFlight.current.abort();
         inFlight.current = new AbortController();
 
-        const rows = await getCpmRuntimeMinute({ actuatorId, minutes });
+        // Passa o signal se a função aceitar (cast para evitar erro de tipo)
+        const rawRows: any[] =
+          await (getCpmRuntimeMinute as any)({ actuatorId, minutes }, inFlight.current.signal);
+
         if (!alive) return;
 
-        // Ordena por ts só para garantir
-        rows.sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
-        setData(rows);
+        // Normaliza defensivamente o shape vindo da API
+        const rows: CpmMinutePoint[] = (rawRows ?? [])
+          .map((r: any) => ({
+            ts: String(r?.ts ?? r?.minute ?? r?.time ?? ""),
+            cpm: Number(r?.cpm ?? r?.value ?? 0),
+          }))
+          // filtra entradas sem ts válido
+          .filter((r) => r.ts);
+
+        // Ordena por ts
+        const sorted = [...rows].sort((a, b) => {
+          const ta = new Date(a.ts).getTime();
+          const tb = new Date(b.ts).getTime();
+          return ta - tb;
+        });
+
+        setData(sorted);
       } catch (e: any) {
         if (!alive) return;
-        setErr(e?.message ?? String(e));
+        if (e?.name !== "AbortError") {
+          setErr(e?.message ?? String(e));
+        }
       } finally {
         if (alive) setLoading(false);
       }
@@ -38,18 +65,26 @@ export function useCpmRuntime(opts?: {
 
     return () => {
       alive = false;
-      if (inFlight.current) inFlight.current.abort();
+      if (inFlight.current) {
+        inFlight.current.abort();
+        inFlight.current = null;
+      }
     };
   }, [actuatorId, minutes]);
 
-  // Label amigável no eixo X (HH:MM)
+  // Eixo X amigável (HH:MM), com proteção contra ts inválido
   const chartData = useMemo(
     () =>
-      data.map((d) => {
+      (data ?? []).map((d) => {
         const dt = new Date(d.ts);
-        const hh = dt.getHours().toString().padStart(2, "0");
-        const mm = dt.getMinutes().toString().padStart(2, "0");
-        return { ts: d.ts, minuteLabel: `${hh}:${mm}`, cpm: d.cpm };
+        const valid = Number.isFinite(dt.getTime());
+        const hh = valid ? String(dt.getHours()).padStart(2, "0") : "";
+        const mm = valid ? String(dt.getMinutes()).padStart(2, "0") : "";
+        return {
+          ts: d.ts,
+          minuteLabel: valid ? `${hh}:${mm}` : "",
+          cpm: Number.isFinite(Number(d.cpm)) ? Number(d.cpm) : 0,
+        };
       }),
     [data]
   );

@@ -1,19 +1,45 @@
-import * as React from "react"
+// src/hooks/useIsMobile.ts
+import * as React from "react";
 
-const MOBILE_BREAKPOINT = 768
+const DEFAULT_BREAKPOINT = 768;
 
-export function useIsMobile() {
-  const [isMobile, setIsMobile] = React.useState<boolean | undefined>(undefined)
+/**
+ * Retorna true quando a viewport está abaixo do breakpoint (px).
+ * - SSR-safe (não acessa window no render)
+ * - Preferência: matchMedia + addEventListener("change")
+ * - Fallback sem deprecation: window.resize (para browsers antigos)
+ */
+export function useIsMobile(breakpoint: number = DEFAULT_BREAKPOINT): boolean {
+  const [isMobile, setIsMobile] = React.useState(false);
 
   React.useEffect(() => {
-    const mql = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`)
-    const onChange = () => {
-      setIsMobile(window.innerWidth < MOBILE_BREAKPOINT)
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return; // SSR ou ambiente sem matchMedia: mantém default
     }
-    mql.addEventListener("change", onChange)
-    setIsMobile(window.innerWidth < MOBILE_BREAKPOINT)
-    return () => mql.removeEventListener("change", onChange)
-  }, [])
 
-  return !!isMobile
+    const mq = window.matchMedia(`(max-width: ${breakpoint - 1}px)`);
+
+    // inicial
+    setIsMobile(mq.matches);
+
+    // caminho moderno (sem warnings)
+    if (typeof mq.addEventListener === "function") {
+      const onChange = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+      mq.addEventListener("change", onChange);
+      return () => mq.removeEventListener("change", onChange);
+    }
+
+    // fallback sem usar addListener (evita deprecation):
+    // observa o resize da janela e consulta mq.matches
+    const onResize = () => setIsMobile(mq.matches);
+    window.addEventListener("resize", onResize);
+    // dispara uma vez para garantir sync
+    onResize();
+
+    return () => {
+      window.removeEventListener("resize", onResize);
+    };
+  }, [breakpoint]);
+
+  return isMobile;
 }

@@ -4,39 +4,39 @@ import { Badge } from "@/components/ui/badge";
 import { useLive } from "@/context/LiveContext";
 import { useActuatorSelection } from "@/context/ActuatorSelectionContext";
 
-type StableState = "RECUADO" | "AVANÇADO" | "DESCONHECIDO";
+type StableState = "RECUADO" | "AVANÇADO";
+type PendingCmd = "AV" | "REC" | null;
 
 const LiveMetrics: React.FC = () => {
   const { snapshot } = useLive();
-  const { selectedId } = useActuatorSelection(); // A1/A2 da UI (fonte da verdade)
+  const { selectedId } = useActuatorSelection(); // 1 | 2
 
-  // ===== System status =====
+  // ===== Deriva "saúde" pelo atraso do snapshot =====
   const systemText = useMemo<"OK" | "DEGRADED" | "OFFLINE" | "—">(() => {
-    const s = String(snapshot?.system?.status ?? "—").toLowerCase();
-    if (s === "ok") return "OK";
-    if (s === "degraded") return "DEGRADED";
-    if (s === "offline" || s === "down") return "OFFLINE";
-    return "—";
-  }, [snapshot?.system?.status]);
+    const ts = snapshot?.ts;
+    if (!ts) return "—";
+    const now = Date.now();
+    const t = Date.parse(ts);
+    if (Number.isNaN(t)) return "—";
+    const ageMs = now - t;
+    // heurística: até 2s OK, até 10s degradado, >10s offline
+    if (ageMs <= 2000) return "OK";
+    if (ageMs <= 10000) return "DEGRADED";
+    return "OFFLINE";
+  }, [snapshot?.ts]);
 
-  // ===== ID efetivo a mostrar (sempre o escolhido na UI) =====
-  const shownId: 1 | 2 = selectedId; // <<— sem depender do snapshot.selectedActuator
+  // ===== Atuador selecionado =====
+  const shownId: 1 | 2 = selectedId as 1 | 2;
 
-  // ===== Estado do atuador selecionado =====
   const display = useMemo(() => {
-    const acts = snapshot?.actuators ?? [];
-    const a = acts.find((x) => x.id === shownId);
-    const state: StableState = (a?.state as StableState) ?? "DESCONHECIDO";
-    return { id: shownId, state };
+    const a = (snapshot?.actuators ?? []).find((x) => x.id === shownId);
+    const state: StableState = (a?.state as StableState) ?? "RECUADO";
+    const pending: PendingCmd = (a?.pending as PendingCmd) ?? null;
+    return { id: shownId, state, pending };
   }, [snapshot?.actuators, shownId]);
 
-  // ===== Label/variant =====
   const label =
-    display.state === "AVANÇADO"
-      ? "ABERTO"
-      : display.state === "RECUADO"
-      ? "RECUADO"
-      : "DESCONHECIDO";
+    display.state === "AVANÇADO" ? "ABERTO" : display.state === "RECUADO" ? "RECUADO" : "—";
 
   const variant =
     label === "ABERTO" ? "success" : label === "RECUADO" ? "secondary" : "outline";
@@ -55,6 +55,11 @@ const LiveMetrics: React.FC = () => {
               System
             </div>
             <div className="text-xl md:text-2xl font-extrabold">{systemText}</div>
+            {snapshot?.ts && (
+              <div className="text-xs text-slate-400 mt-1">
+                last: {new Date(snapshot.ts).toLocaleTimeString()}
+              </div>
+            )}
           </div>
         </div>
 
@@ -66,6 +71,19 @@ const LiveMetrics: React.FC = () => {
               <Badge size="lg" variant={variant as any} className="select-none uppercase">
                 {label}
               </Badge>
+
+              {/* Indica transição (pending) */}
+              {display.pending && (
+                <Badge variant="outline" className="ml-2 animate-pulse">
+                  em transição: {display.pending === "AV" ? "ABRINDO" : "FECHANDO"}
+                </Badge>
+              )}
+            </div>
+
+            {/* Pequeno rodapé técnico */}
+            <div className="text-xs text-slate-400">
+              Atualiza a cada ~100&nbsp;ms por WebSocket. Estados derivados de S1/S2 com
+              congelamento em STOP para evitar “meio ciclo invertido”.
             </div>
           </div>
         </div>

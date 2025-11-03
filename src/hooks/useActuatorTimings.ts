@@ -9,16 +9,36 @@ export type TimingsNorm = {
   cycle_ms: number | null; // dt_ciclo_s * 1000
 };
 
-function normalizeTimings(resp: ActuatorTimingsResp) {
+/** Helper: normaliza número em ms (ou null se não vier) */
+function toMsOrNull(sec: unknown): number | null {
+  if (sec === null || sec === undefined) return null;
+  const n = Number(sec);
+  if (!Number.isFinite(n)) return null;
+  const ms = Math.round(n * 1000);
+  return ms >= 0 ? ms : 0;
+}
+
+/** Converte resposta bruta do backend para um dicionário por id */
+function normalizeTimings(resp?: ActuatorTimingsResp): Record<number, TimingsNorm> {
   const out: Record<number, TimingsNorm> = {};
-  for (const row of resp?.actuators ?? []) {
-    const id = Number((row as any).actuator_id ?? (row as any).id);
-    const last = (row as any).last ?? {};
+  const rows = (resp?.actuators ?? []) as any[];
+
+  for (const row of rows) {
+    const id = Number((row?.actuator_id ?? row?.id) ?? NaN);
+    if (!Number.isFinite(id)) continue;
+
+    const last = (row?.last ?? {}) as {
+      ts_utc?: string | null;
+      dt_abre_s?: number | string | null;
+      dt_fecha_s?: number | string | null;
+      dt_ciclo_s?: number | string | null;
+    };
+
     out[id] = {
       ts: last.ts_utc ?? null,
-      open_ms: last.dt_abre_s != null ? Math.round(Number(last.dt_abre_s) * 1000) : null,
-      close_ms: last.dt_fecha_s != null ? Math.round(Number(last.dt_fecha_s) * 1000) : null,
-      cycle_ms: last.dt_ciclo_s != null ? Math.round(Number(last.dt_ciclo_s) * 1000) : null,
+      open_ms: toMsOrNull(last.dt_abre_s),
+      close_ms: toMsOrNull(last.dt_fecha_s),
+      cycle_ms: toMsOrNull(last.dt_ciclo_s),
     };
   }
   return out;
@@ -26,35 +46,42 @@ function normalizeTimings(resp: ActuatorTimingsResp) {
 
 export function useActuatorTimings(pollMs: number = 2000) {
   const [timingsById, setTimingsById] = useState<Record<number, TimingsNorm>>({});
-  const [loading, setLoading] = useState<boolean>(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const alive = useRef(true);
-  const timer = useRef<number | null>(null);
+  const aliveRef = useRef(true);
+  const timerRef = useRef<number | null>(null);
 
   const fetchNow = useCallback(async () => {
     try {
       setLoading(true);
-      const resp = await getActuatorTimings(); // /api/live/actuators/timings
+      const resp = await getActuatorTimings(); // GET /api/live/actuators/timings
       const norm = normalizeTimings(resp);
-      if (!alive.current) return;
+      if (!aliveRef.current) return;
       setTimingsById(norm);
       setError(null);
     } catch (e: any) {
-      if (alive.current) setError(e?.message ?? "Erro ao buscar timings");
+      if (aliveRef.current) setError(e?.message ?? "Erro ao buscar timings");
     } finally {
-      if (alive.current) setLoading(false);
+      if (aliveRef.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    alive.current = true;
-    fetchNow();
-    timer.current = window.setInterval(fetchNow, pollMs) as unknown as number;
+    aliveRef.current = true;
+    void fetchNow();
+
+    // só arma o polling se for positivo
+    if (pollMs > 0) {
+      timerRef.current = window.setInterval(fetchNow, pollMs) as unknown as number;
+    }
+
     return () => {
-      alive.current = false;
-      if (timer.current) window.clearInterval(timer.current);
-      timer.current = null;
+      aliveRef.current = false;
+      if (timerRef.current != null) {
+        window.clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
     };
   }, [fetchNow, pollMs]);
 

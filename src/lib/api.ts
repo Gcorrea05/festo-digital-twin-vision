@@ -305,13 +305,19 @@ export async function getCyclesRate60s(windowS: number = 60): Promise<CyclesRate
 export async function getVibrationLive(windowS: number = 2): Promise<VibrationLiveResp> {
   try {
     const snap = await fetchJson<any>("/api/monitoring/snapshot");
-    const items: VibrationLiveItem[] = ((snap?.vibration?.items ?? []) as any[]).map((it) => ({
-      mpu_id: Number(it.mpu_id),
-      overall: Number(it.overall ?? 0),
-    }));
+    const items: VibrationLiveItem[] = ((snap?.vibration?.items ?? []) as any[])
+      .filter(Boolean)
+      .map((it) => ({
+        mpu_id: Number(it.mpu_id),
+        overall: Number(it.overall ?? 0),
+      }));
     return { items };
   } catch {
-    return fetchJson<VibrationLiveResp>(`/api/live/vibration?window_s=${windowS}`);
+    const r = await fetchJson<any>(`/api/live/vibration?window_s=${windowS}`);
+    const items: VibrationLiveItem[] = ((r?.items ?? []) as any[])
+      .filter(Boolean)
+      .map((it) => ({ mpu_id: Number(it.mpu_id), overall: Number(it.overall ?? 0) }));
+    return { items };
   }
 }
 
@@ -329,7 +335,12 @@ export async function getActuatorTimings(): Promise<ActuatorTimingsResp> {
    System status / Health
    ====================== */
 export async function getSystemStatus(): Promise<SystemStatusResp> {
-  return {};
+  try {
+    const h = await fetchJson<HealthResp>("/api/health");
+    return { components: { actuators: h.status, sensors: h.status, transmission: h.status, control: h.status } };
+  } catch {
+    return {};
+  }
 }
 
 export async function getHealth(): Promise<HealthResp> {
@@ -523,11 +534,11 @@ async function cpmFromOpcByMinute(act: "A1" | "A2", since: string): Promise<Minu
   // 1) normaliza para array sempre
   const rows: OPCHistoryRow[] = await getOPCHistory({ actuatorId: id, facet: "S2", since, asc: true })
     .then(r => (Array.isArray(r) ? r : []))
-    .catch(() => []);
+    .catch(() => [] as OPCHistoryRow[]);
 
   const map: MinuteMapNum = new Map();
 
-  // começa em 1; 2) checa limites e 3) faz narrowing
+  // começa em 1; 2) checa limites e 3) faz narrowing (TS-safe)
   for (let i = 1; i < rows.length; i++) {
     const prevRow = rows[i - 1];
     const currRow = rows[i];
@@ -536,7 +547,7 @@ async function cpmFromOpcByMinute(act: "A1" | "A2", since: string): Promise<Minu
     const prev = toBool01((prevRow as any).value);
     const curr = toBool01((currRow as any).value);
     if (prev === 0 && curr === 1) {
-      const key = toMinuteIsoUTC(new Date(currRow.ts));
+      const key = toMinuteIsoUTC(new Date((currRow as OPCHistoryRow).ts));
       map.set(key, (map.get(key) ?? 0) + 1);
     }
   }
@@ -548,7 +559,7 @@ async function runtimeFromOpcByMinute(act: "A1" | "A2", since: string): Promise<
 
   const rows: OPCHistoryRow[] = await getOPCHistory({ actuatorId: id, facet: "S2", since, asc: true })
     .then(r => (Array.isArray(r) ? r : []))
-    .catch(() => []);
+    .catch(() => [] as OPCHistoryRow[]);
 
   const out: MinuteMapNum = new Map();
   if (rows.length === 0) return out;
@@ -559,10 +570,9 @@ async function runtimeFromOpcByMinute(act: "A1" | "A2", since: string): Promise<
     const v = toBool01((curr as any).value);
     if (!v) continue;
 
-    const t0 = new Date(curr.ts).getTime();
-
+    const t0 = new Date((curr as OPCHistoryRow).ts).getTime();
     const next = i + 1 < rows.length ? rows[i + 1] : undefined;
-    const t1 = next ? new Date(next.ts).getTime() : Date.now();
+    const t1 = next ? new Date((next as OPCHistoryRow).ts).getTime() : Date.now();
 
     let t = t0;
     while (t < t1) {
@@ -589,7 +599,6 @@ async function runtimeFromOpcByMinute(act: "A1" | "A2", since: string): Promise<
   }
   return out;
 }
-
 
 export async function getCpmRuntimeMinute(
   act: "A1" | "A2",
@@ -891,34 +900,30 @@ export async function getAlerts(limit = 5): Promise<{ items: AlertItem[]; count:
   const full = url.startsWith("http") ? url : `${API_BASE}${url}`;
 
   const headers: Record<string, string> = {};
-  if (__alerts_cache.etag) headers["If-None-Match"] = __alerts_cache.etag;
+  // Normaliza para `"etag"` (com aspas), pois o back compara sem/como aspas.
+  if (__alerts_cache.etag) headers["If-None-Match"] = `"${__alerts_cache.etag.replace(/^W\/|"/g, "")}"`;
   if (__alerts_cache.lastModified) headers["If-Modified-Since"] = __alerts_cache.lastModified;
-
-  // "no-cache" permite a validação condicional (diferente de "no-store")
-  const init: RequestInit = { method: "GET", headers, cache: "no-cache" };
 
   const ctrl = new AbortController();
   const to = setTimeout(() => ctrl.abort(), 8000);
-
   let res: Response;
   try {
-    res = await fetch(full, { ...init, signal: ctrl.signal });
+    res = await fetch(full, { method: "GET", headers, cache: "no-cache", signal: ctrl.signal });
   } finally {
     clearTimeout(to);
   }
 
-  // 304 => reaproveita cache
   if (res.status === 304 && __alerts_cache.payload) {
     const p = __alerts_cache.payload;
     return { items: p.items ?? [], count: Number.isFinite(p.count) ? (p.count as number) : (p.items?.length ?? 0) };
   }
-
   if (!res.ok) throw new Error(`API ${res.status} ${res.statusText} on ${url}`);
 
   const data = (await res.json()) as any;
-  const etag = res.headers.get("etag") || undefined;
+  const raw = res.headers.get("etag") || undefined;
+  // guarda só o miolo do etag para reuso (sem W/ e sem aspas)
+  if (raw) __alerts_cache.etag = raw.replace(/^W\//, "").replace(/"/g, "");
   const lastMod = res.headers.get("last-modified") || undefined;
-  if (etag) __alerts_cache.etag = etag.replace(/^W\//, "");
   if (lastMod) __alerts_cache.lastModified = lastMod;
   __alerts_cache.payload = data;
 
@@ -953,7 +958,30 @@ export type WSMessageAlert = { type: "alert"; ts: string; code: string; severity
 export type WSHeartbeat = { type: "hb"; ts: string; channel?: string };
 export type WSError = { type: "error"; channel?: string; detail: string; ts?: string };
 
-export type AnyWSMessage = WSMessageLive | WSMessageMonitoring | WSMessageCPM | WSMessageAlert | WSHeartbeat | WSError;
+// NOVO: snapshot de alerts enviado no on-open de /ws/alerts
+export type WSMessageAlertsSnapshot = {
+  type: "alerts";
+  ts: string;
+  items: {
+    id?: number | string;
+    code: string;
+    severity: number;
+    origin?: string;
+    message: string;
+    status?: "open" | "ack" | "closed";
+    actuator_id?: number | null;
+    details?: any;
+  }[];
+};
+
+export type AnyWSMessage =
+  | WSMessageLive
+  | WSMessageMonitoring
+  | WSMessageCPM
+  | WSMessageAlert
+  | WSMessageAlertsSnapshot
+  | WSHeartbeat
+  | WSError;
 
 export type WSHandlers = {
   onMessage?: (msg: AnyWSMessage) => void;
@@ -1029,18 +1057,31 @@ function startSnapshotFallback(
         } as WSMessageLive);
       } else {
         const p = await fetchJson<any>("/api/monitoring/snapshot");
-        onMessage(p as WSMessageMonitoring);
+        const ts = String(p?.ts ?? new Date().toISOString());
+        const timings = Array.isArray(p?.timings) ? p.timings : [];
+        const vibItems = Array.isArray(p?.vibration?.items) ? p.vibration.items : [];
+        onMessage({
+          type: "monitoring",
+          ts,
+          timings,
+          vibration: {
+            window_s: Number(p?.vibration?.window_s ?? 2),
+            items: vibItems
+              .filter((it: any) => it && it.mpu_id != null)
+              .map((it: any) => ({ mpu_id: Number(it.mpu_id), overall: Number(it.overall ?? 0) })),
+          },
+        } as WSMessageMonitoring);
       }
     } catch {}
   };
   // @ts-ignore
-  const id = window.setInterval(tick, everyMs);
+  const id = typeof window !== "undefined" ? window.setInterval(tick, everyMs) : (0 as any);
   tick(); // primeiro preenchimento
-  return id;
+  return id as unknown as number;
 }
 
 function clearFallbackTimer(state: InternalState) {
-  if (state.fallbackTimer != null) {
+  if (state.fallbackTimer != null && typeof window !== "undefined") {
     // @ts-ignore
     window.clearInterval(state.fallbackTimer);
     state.fallbackTimer = null;
@@ -1097,14 +1138,16 @@ function openWS(path: string, handlers: WSHandlers = {}, options: WSOptions = {}
           }
           const next = state.backoffMs;
           state.backoffMs = Math.min(state.opts.maxBackoffMs, Math.floor(state.backoffMs * 1.8));
-          // @ts-ignore
-          window.setTimeout(() => {
-            if (!state.paused && !state.intentionallyClosed) openSocket();
-          }, next);
+          if (typeof window !== "undefined") {
+            // @ts-ignore
+            window.setTimeout(() => {
+              if (!state.paused && !state.intentionallyClosed) openSocket();
+            }, next);
+          }
         }
       };
     } catch {
-      if (!state.intentionallyClosed && !state.paused) {
+      if (!state.intentionallyClosed && !state.paused && typeof window !== "undefined") {
         const next = state.backoffMs;
         state.backoffMs = Math.min(state.opts.maxBackoffMs, Math.floor(state.backoffMs * 1.8));
         // @ts-ignore
@@ -1145,7 +1188,7 @@ function openWS(path: string, handlers: WSHandlers = {}, options: WSOptions = {}
     close(code = 1000, reason = "client-close") {
       state.intentionallyClosed = true;
       clearFallbackTimer(state);
-      if (state.visHandler) {
+      if (state.visHandler && typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", state.visHandler);
         state.visHandler = null;
       }
@@ -1191,6 +1234,17 @@ export function openSlowWS(handlers: WSHandlers): WSHandle {
     manageVisibility: true,
     fallbackSnapshot: null,
     fallbackIntervalMs: 60000,
+    maxBackoffMs: 10000,
+  });
+}
+
+// NOVO: canal de Alerts (snapshot inicial + push on-change)
+export function openAlertsWS(handlers: WSHandlers): WSHandle {
+  // Este canal envia um snapshot inicial {type:"alerts", items:[...]} e depois "push" on-change.
+  return openWS("/ws/alerts", handlers, {
+    manageVisibility: true,
+    fallbackSnapshot: null,       // sem fallback HTTP aqui; snapshot já vem no on-open
+    fallbackIntervalMs: 0,
     maxBackoffMs: 10000,
   });
 }

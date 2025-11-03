@@ -6,11 +6,11 @@ export type DisplayLabel = "ABERTO" | "RECUADO" | "ABRINDO" | "FECHANDO" | "ERRO
 
 type Facets01 = { S1: 0 | 1; S2: 0 | 1 };
 
-const STABLE_CONFIRM_MS = 200; // precisa ficar estável isso de tempo para “trocar”
-const TRANSITION_HOLD_MS = 600; // segura transição (0/0) sem cair para “—”
+const STABLE_CONFIRM_MS = 200;   // precisa ficar estável isso de tempo para “trocar”
+const TRANSITION_HOLD_MS = 600;  // segura transição (0/0) sem cair para “—”
 
 type Track = {
-  prevStable?: Exclude<DisplayLabel, "ABRINDO" | "FECHANDO" | "ERRO" | "—">; // ABERTO|RECUADO
+  prevStable?: Exclude<DisplayLabel, "ABRINDO" | "FECHANDO" | "ERRO" | "—">; // ABERTO | RECUADO
   candidate?: "ABERTO" | "RECUADO";
   candSince?: number;
   lastStableCommit?: number;
@@ -18,20 +18,29 @@ type Track = {
 };
 
 /** deduz facets (S1/S2) a partir do objeto do atuador */
-function deriveFacets(a: any): { facets: Facets01 | null; conflict: boolean } {
-  if (a?.facets && typeof a.facets.S1 === "number" && typeof a.facets.S2 === "number") {
+function deriveFacets(a: any): { facets: Facets01 | null } {
+  // Caso já venha com facets normalizadas
+  if (
+    a?.facets &&
+    (typeof a.facets.S1 === "number" || typeof a?.facets?.S1 === "boolean") &&
+    (typeof a.facets.S2 === "number" || typeof a?.facets?.S2 === "boolean")
+  ) {
     const S1 = a.facets.S1 ? 1 : 0;
     const S2 = a.facets.S2 ? 1 : 0;
-    return { facets: { S1, S2 }, conflict: S1 === 1 && S2 === 1 };
+    return { facets: { S1, S2 } };
   }
+
+  // Deduz pelas strings de estado
   const st = String(a?.state ?? "").toUpperCase(); // RECUADO/AVANÇADO
-  if (st.includes("RECU")) return { facets: { S1: 1, S2: 0 }, conflict: false };
-  if (st.includes("AVAN")) return { facets: { S1: 0, S2: 1 }, conflict: false };
-  return { facets: { S1: 0, S2: 0 }, conflict: false }; // transição
+  if (st.includes("RECU")) return { facets: { S1: 1, S2: 0 } };
+  if (st.includes("AVAN")) return { facets: { S1: 0, S2: 1 } };
+
+  // transição / indefinido
+  return { facets: { S1: 0, S2: 0 } };
 }
 
 /** converte facets estáveis para rótulo estável; 0/0 -> null (transição) */
-function stableFromFacets(f: Facets01 | null): "ABERTO" | "RECUADO" | null | "ERRO" {
+function stableFromFacets(f: Facets01 | null): "ABERTO" | "RECUADO" | "ERRO" | null {
   if (!f) return null;
   if (f.S1 === 1 && f.S2 === 0) return "RECUADO";
   if (f.S1 === 0 && f.S2 === 1) return "ABERTO";
@@ -53,7 +62,7 @@ export function useLatchedDisplay(actuator: any, id: number) {
     const tr = (tracksRef.current[id] ||= {});
     const pend = (actuator?.pending ?? null) as "AV" | "REC" | null;
 
-    const { facets, conflict } = deriveFacets(actuator);
+    const { facets } = deriveFacets(actuator);
     const stFromFacets = stableFromFacets(facets);
 
     // conflito explícito: ERRO na hora
@@ -84,17 +93,17 @@ export function useLatchedDisplay(actuator: any, id: number) {
     } else {
       // 0/0 (transição): segura último estável por um tempo
       if (tr.lastStableCommit && now - tr.lastStableCommit <= TRANSITION_HOLD_MS) {
-        // mantém
+        // mantém rótulo anterior por histerese
       } else {
-        // ainda assim, em 0/0 mostramos transição conforme pending, se houver
+        // sem estável/tempo já passou — rótulo cairá para transição/pending (abaixo)
       }
     }
 
     // decide rótulo a exibir
     let label: DisplayLabel = tr.prevStable ?? "—";
 
-    // se estamos em transição e há pending contrário ao estável, exibe abrindo/fechando
-    if (stFromFacets === null || stFromFacets === undefined) {
+    // se estamos em transição (stFromFacets === null) e há pending contrário ao estável, exibe abrindo/fechando
+    if (stFromFacets == null) {
       if (pend === "AV" && tr.prevStable !== "ABERTO") label = "ABRINDO";
       else if (pend === "REC" && tr.prevStable !== "RECUADO") label = "FECHANDO";
     }

@@ -132,38 +132,38 @@ function ModelAndAnim({
     lastPlayedStateRef.current = null;
 
     // Fit e configuração dinâmica do OrbitControls (target + limites de zoom)
-if (groupRef.current) {
-  const { center, fitDist } = fitObject(
-    camera as THREE.PerspectiveCamera,
-    gl as THREE.WebGLRenderer,
-    groupRef.current
-  );
+    if (groupRef.current) {
+      const { center, fitDist } = fitObject(
+        camera as THREE.PerspectiveCamera,
+        gl as THREE.WebGLRenderer,
+        groupRef.current
+      );
 
-  const controls = controlsRef.current;
-  if (controls) {
-    controls.target.copy(center);
+      const controls = controlsRef.current;
+      if (controls) {
+        controls.target.copy(center);
 
-    // === knobs de conforto ===
-    const startDist = fitDist * 1.15; // distância inicial (1.10–1.25)
-    const minDist   = fitDist * 0.65; // zoom mínimo (mais perto)
-    const maxDist   = fitDist * 3.0;  // zoom máximo (mais longe)
+        // === knobs de conforto ===
+        const startDist = fitDist * 1.15; // distância inicial (1.10–1.25)
+        const minDist   = fitDist * 0.65; // zoom mínimo (mais perto)
+        const maxDist   = fitDist * 3.0;  // zoom máximo (mais longe)
 
-    // posiciona a câmera exatamente na distância desejada
-    const dir = new THREE.Vector3().subVectors(camera.position, center).normalize();
-    camera.position.copy(center.clone().add(dir.multiplyScalar(startDist)));
-    camera.updateProjectionMatrix();
+        // posiciona a câmera exatamente na distância desejada
+        const dir = new THREE.Vector3().subVectors(camera.position, center).normalize();
+        camera.position.copy(center.clone().add(dir.multiplyScalar(startDist)));
+        camera.updateProjectionMatrix();
 
-    // aplica limites do OrbitControls
-    controls.minDistance = Math.max(0.1, minDist);
-    controls.maxDistance = Math.max(controls.minDistance + 0.01, maxDist);
-    controls.enableZoom = true;
-    controls.zoomSpeed = 1.0;
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
+        // aplica limites do OrbitControls
+        controls.minDistance = Math.max(0.1, minDist);
+        controls.maxDistance = Math.max(controls.minDistance + 0.01, maxDist);
+        controls.enableZoom = true;
+        controls.zoomSpeed = 1.0;
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.08;
 
-    controls.update();
-  }
-}
+        controls.update();
+      }
+    }
 
     return () => {
       openAction.stop();
@@ -236,12 +236,17 @@ export default function ThreeDModel({ paused }: ThreeDModelProps) {
   const which: 1 | 2 = (selectedId === 1 || selectedId === 2) ? (selectedId as 1 | 2) : localIdx;
 
   const { snapshot } = useLive();
+
+  // Busca por id (não usar actuator_id)
   const stateForThisActuator: StableState | null = useMemo(() => {
-    const a = snapshot?.actuators?.find((x) => x.id === which);
+    const a = snapshot?.actuators?.find((x) => Number((x as any).id) === which) ?? null;
     return (a?.state as StableState) ?? null;
   }, [snapshot?.actuators, which]);
 
-  const isSystemOK = String(snapshot?.system?.status ?? "").toLowerCase() === "ok";
+  // Sem snapshot.system no tipo atual: considera OK se o heartbeat é recente (<10s)
+  const tsMs = snapshot?.ts ? Date.parse(snapshot.ts) : NaN;
+  const isFresh = Number.isFinite(tsMs) ? (Date.now() - tsMs) < 10_000 : false;
+  const isSystemOK = isFresh;
 
   const [showCamera, setShowCamera] = useState(false);
   const effectivePaused = (paused ?? false) || !isSystemOK || showCamera;
@@ -337,7 +342,6 @@ export default function ThreeDModel({ paused }: ThreeDModelProps) {
             }}
             onCreated={({ gl }) => {
               gl.setClearColor("#111");
-              // @ts-expect-error prop existe no three moderno
               (gl as THREE.WebGLRenderer).outputColorSpace = THREE.SRGBColorSpace;
               gl.setPixelRatio(1);
             }}
@@ -365,7 +369,6 @@ export default function ThreeDModel({ paused }: ThreeDModelProps) {
                 enableRotate
                 enablePan={false}
                 // min/maxDistance serão setados dinamicamente após o fit
-                // manter enableZoom sem limites aqui
               />
             </Suspense>
           </Canvas>
