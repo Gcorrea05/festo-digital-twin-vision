@@ -51,6 +51,7 @@ export type SlowPayload = {
   items: Array<{ id: number; cycles: number; cpm: number; window_s: number }>;
 };
 
+// Mantemos o tipo de alert para compat, mas não consumimos via WS aqui.
 export type AlertItem = {
   type: "alert";
   ts: string;
@@ -62,12 +63,6 @@ export type AlertItem = {
   status?: string;
   actuator_id?: number | null;
   details?: any;
-};
-
-export type AlertsSnapshot = {
-  type: "alerts";
-  ts: string;
-  items: AlertItem[];
 };
 
 /** ================== Helpers de URL (http -> ws) ================== */
@@ -125,7 +120,6 @@ class WSClient {
         }
       };
       this.ws.onerror = () => {
-        // força fechamento pra entrar no backoff
         try {
           this.ws?.close();
         } catch {}
@@ -140,7 +134,7 @@ class WSClient {
     this.clearPing();
     this.hbTimer = setInterval(() => {
       try {
-        this.ws?.send?.("hb"); // server ignora; só mantém ativa
+        this.ws?.send?.("hb"); // mantêm conexão ativa
       } catch {}
     }, 9000);
   }
@@ -177,8 +171,8 @@ type LiveContextState = {
   >;
   // pacote “slow” (cpm)
   cpm: Record<number, { cycles: number; cpm: number; window_s: number; ts: string }>;
-  // pacote “alerts”
-  alerts: AlertItem[]; // últimos N, já deduplicados (por id+ts+code)
+  // pacote “alerts” — mantemos, mas sem WS aqui (preenchido em outra tela se precisar)
+  alerts: AlertItem[];
   // helpers
   getActuator: (id: number) => LiveActuator | undefined;
 };
@@ -201,10 +195,10 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
     {}
   );
 
-  // ===== alerts =====
+  // ===== alerts (sem WS aqui; deixamos vazio/compat) =====
   const alertsRef = useRef<AlertItem[]>([]);
 
-  // throttling leve pro “live” (evita rerender a cada 50–100ms)
+  // throttling leve pro “live”
   const livePendingRef = useRef<LivePayload | null>(null);
   const liveFlushTimer = useRef<number | null>(null);
 
@@ -219,7 +213,6 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const scheduleFlushLive = useCallback(() => {
     if (liveFlushTimer.current) return;
-    // 100ms é um bom compromisso visual
     liveFlushTimer.current = window.setTimeout(() => {
       liveFlushTimer.current = null;
       flushLive();
@@ -227,23 +220,28 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [flushLive]);
 
   // ===== Handlers de mensagens =====
-  const onLiveMessage = useCallback((ev: MessageEvent) => {
-    try {
-      const data: LivePayload = JSON.parse(ev.data);
-      if (data?.type !== "live") return;
-      livePendingRef.current = data;
-      scheduleFlushLive();
-    } catch {}
-  }, [scheduleFlushLive]);
+  const onLiveMessage = useCallback(
+    (ev: MessageEvent) => {
+      try {
+        const data: LivePayload = JSON.parse(ev.data);
+        if (data?.type !== "live") return;
+        livePendingRef.current = data;
+        scheduleFlushLive();
+      } catch {}
+    },
+    [scheduleFlushLive]
+  );
 
   const onMonitoringMessage = useCallback((ev: MessageEvent) => {
     try {
       const data: MonitoringPayload = JSON.parse(ev.data);
       if (data?.type !== "monitoring") return;
 
-      // atualiza timings
-      const next: Record<number, { dt_abre_s: number | null; dt_fecha_s: number | null; dt_ciclo_s: number | null }> =
-        { ...timingsRef.current };
+      const next: Record<
+        number,
+        { dt_abre_s: number | null; dt_fecha_s: number | null; dt_ciclo_s: number | null }
+      > = { ...timingsRef.current };
+
       for (const t of data.timings || []) {
         next[t.actuator_id] = {
           dt_abre_s: t.last?.dt_abre_s ?? null,
@@ -267,53 +265,22 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {}
   }, []);
 
-  const onAlertsMessage = useCallback((ev: MessageEvent) => {
-    try {
-      const snap: AlertsSnapshot | AlertItem = JSON.parse(ev.data);
-
-      const norm = (arr: AlertItem[]) => {
-        // dedupe por (id || code+origin+ts)
-        const key = (a: AlertItem) =>
-          a.id ? `id:${a.id}` : `k:${a.code}|${a.origin}|${a.ts.slice(0, 19)}`;
-        const seen = new Set<string>();
-        const out: AlertItem[] = [];
-        for (const a of arr) {
-          const k = key(a);
-          if (seen.has(k)) continue;
-          seen.add(k);
-          out.push(a);
-        }
-        // máximo 20
-        return out.slice(-20);
-      };
-
-      if ((snap as AlertsSnapshot).type === "alerts" && (snap as any).items) {
-        alertsRef.current = norm([...(alertsRef.current || []), ...((snap as AlertsSnapshot).items || [])]);
-      } else if ((snap as AlertItem).type === "alert") {
-        alertsRef.current = norm([...(alertsRef.current || []), snap as AlertItem]);
-      }
-    } catch {}
-  }, []);
-
-  // ===== Conexões WS =====
+  // ===== Conexões WS (alerts REMOVIDO) =====
   useEffect(() => {
     const wsLive = new WSClient(toWS("/ws/live"), onLiveMessage);
     const wsMon = new WSClient(toWS("/ws/monitoring"), onMonitoringMessage);
     const wsSlow = new WSClient(toWS("/ws/slow"), onSlowMessage);
-    const wsAlerts = new WSClient(toWS("/ws/alerts"), onAlertsMessage);
 
     wsLive.open();
     wsMon.open();
     wsSlow.open();
-    wsAlerts.open();
 
     return () => {
       wsLive.close();
       wsMon.close();
       wsSlow.close();
-      wsAlerts.close();
     };
-  }, [onLiveMessage, onMonitoringMessage, onSlowMessage, onAlertsMessage]);
+  }, [onLiveMessage, onMonitoringMessage, onSlowMessage]);
 
   // ===== snapshot memorizado =====
   const value = useMemo<LiveContextState>(
@@ -321,7 +288,7 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
       snapshot: { ts: liveTs, actuators, mpu },
       timings: timingsRef.current,
       cpm: cpmRef.current,
-      alerts: alertsRef.current,
+      alerts: alertsRef.current, // permanece disponível, porém não é populado aqui
       getActuator: (id: number) => (actuators || []).find((a) => a.id === id),
     }),
     [liveTs, actuators, mpu]

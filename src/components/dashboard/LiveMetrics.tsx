@@ -5,7 +5,6 @@ import { useLive } from "@/context/LiveContext";
 import { useActuatorSelection } from "@/context/ActuatorSelectionContext";
 
 type StableState = "RECUADO" | "AVANÇADO";
-type PendingCmd = "AV" | "REC" | null;
 
 const LiveMetrics: React.FC = () => {
   const { snapshot } = useLive();
@@ -31,8 +30,7 @@ const LiveMetrics: React.FC = () => {
   const display = useMemo(() => {
     const a = (snapshot?.actuators ?? []).find((x) => x.id === shownId);
     const state: StableState = (a?.state as StableState) ?? "RECUADO";
-    const pending: PendingCmd = (a?.pending as PendingCmd) ?? null;
-    return { id: shownId, state, pending };
+    return { id: shownId, state };
   }, [snapshot?.actuators, shownId]);
 
   const label =
@@ -71,13 +69,7 @@ const LiveMetrics: React.FC = () => {
               <Badge size="lg" variant={variant as any} className="select-none uppercase">
                 {label}
               </Badge>
-
-              {/* Indica transição (pending) */}
-              {display.pending && (
-                <Badge variant="outline" className="ml-2 animate-pulse">
-                  em transição: {display.pending === "AV" ? "ABRINDO" : "FECHANDO"}
-                </Badge>
-              )}
+              {/* Removido: badge de "em transição" */}
             </div>
 
             {/* Pequeno rodapé técnico */}

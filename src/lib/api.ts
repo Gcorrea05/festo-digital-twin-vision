@@ -490,11 +490,7 @@ const takeArray = (payload: any) =>
 // tenta várias formas de query aceitas pelo backend (SEM fallback vazio)
 async function tryMinuteAggMany(act: "A1" | "A2", since: string): Promise<MinuteAgg[]> {
   const id = act === "A1" ? "1" : "2";
-  const combos: Array<Record<string, string>> = [
-    { actuator: id },
-    { id },
-    { act: id },
-  ];
+  const combos: Array<Record<string, string>> = [{ actuator: id }, { id }, { act: id }];
 
   for (const a of combos) {
     const qs = new URLSearchParams({ ...a, since }).toString();
@@ -531,14 +527,12 @@ const actLabelToId = (act: "A1" | "A2"): 1 | 2 => (act === "A1" ? 1 : 2);
 async function cpmFromOpcByMinute(act: "A1" | "A2", since: string): Promise<MinuteMapNum> {
   const id = actLabelToId(act);
 
-  // 1) normaliza para array sempre
   const rows: OPCHistoryRow[] = await getOPCHistory({ actuatorId: id, facet: "S2", since, asc: true })
-    .then(r => (Array.isArray(r) ? r : []))
+    .then((r) => (Array.isArray(r) ? r : []))
     .catch(() => [] as OPCHistoryRow[]);
 
   const map: MinuteMapNum = new Map();
 
-  // começa em 1; 2) checa limites e 3) faz narrowing (TS-safe)
   for (let i = 1; i < rows.length; i++) {
     const prevRow = rows[i - 1];
     const currRow = rows[i];
@@ -558,7 +552,7 @@ async function runtimeFromOpcByMinute(act: "A1" | "A2", since: string): Promise<
   const id = actLabelToId(act);
 
   const rows: OPCHistoryRow[] = await getOPCHistory({ actuatorId: id, facet: "S2", since, asc: true })
-    .then(r => (Array.isArray(r) ? r : []))
+    .then((r) => (Array.isArray(r) ? r : []))
     .catch(() => [] as OPCHistoryRow[]);
 
   const out: MinuteMapNum = new Map();
@@ -613,10 +607,7 @@ export async function getCpmRuntimeMinute(
       console.info(`[getCpmRuntimeMinute][${act}] via minute-agg -> ${rows.length}`);
     return rows;
   }
-  const [cpmMap, rtMap] = await Promise.all([
-    cpmFromOpcByMinute(act, since),
-    runtimeFromOpcByMinute(act, since),
-  ]);
+  const [cpmMap, rtMap] = await Promise.all([cpmFromOpcByMinute(act, since), runtimeFromOpcByMinute(act, since)]);
   const keys = new Set<string>([...cpmMap.keys(), ...rtMap.keys()]);
   const rows: CpmRuntimeMinuteRow[] = [];
   for (const k of keys) rows.push({ minute: k, cpm: cpmMap.get(k) ?? 0, runtime_s: rtMap.get(k) ?? 0 });
@@ -850,12 +841,7 @@ export async function getMpuLatestSafe(nameOrId: string): Promise<MpuSample | nu
   const idName = m?.[1] ? `MPUA${m?.[1]}` : /^\d+$/.test(s) ? `MPUA${s}` : s.toUpperCase();
   const qsName = new URLSearchParams({ name: idName }).toString();
   const qsId = new URLSearchParams({ id: idName }).toString();
-  const urls = [
-    `/mpu/history?${qsName}`,
-    `/mpu/history?${qsId}`,
-    `/api/mpu/history?${qsName}`,
-    `/api/mpu/history?${qsId}`,
-  ];
+  const urls = [`/mpu/history?${qsName}`, `/mpu/history?${qsId}`, `/api/mpu/history?${qsName}`, `/api/mpu/history?${qsId}`];
   for (const url of urls) {
     try {
       const r = await fetchJson<any>(url);
@@ -900,7 +886,6 @@ export async function getAlerts(limit = 5): Promise<{ items: AlertItem[]; count:
   const full = url.startsWith("http") ? url : `${API_BASE}${url}`;
 
   const headers: Record<string, string> = {};
-  // Normaliza para `"etag"` (com aspas), pois o back compara sem/como aspas.
   if (__alerts_cache.etag) headers["If-None-Match"] = `"${__alerts_cache.etag.replace(/^W\/|"/g, "")}"`;
   if (__alerts_cache.lastModified) headers["If-Modified-Since"] = __alerts_cache.lastModified;
 
@@ -921,7 +906,6 @@ export async function getAlerts(limit = 5): Promise<{ items: AlertItem[]; count:
 
   const data = (await res.json()) as any;
   const raw = res.headers.get("etag") || undefined;
-  // guarda só o miolo do etag para reuso (sem W/ e sem aspas)
   if (raw) __alerts_cache.etag = raw.replace(/^W\//, "").replace(/"/g, "");
   const lastMod = res.headers.get("last-modified") || undefined;
   if (lastMod) __alerts_cache.lastModified = lastMod;
@@ -937,7 +921,6 @@ export async function getAlerts(limit = 5): Promise<{ items: AlertItem[]; count:
    =======================   WEBSOCKET CLIENTS   ==============================
    ============================================================================ */
 
-// Mensagens WS (contratos novos)
 export type WSMessageLive = {
   type: "live";
   ts: string;
@@ -958,7 +941,6 @@ export type WSMessageAlert = { type: "alert"; ts: string; code: string; severity
 export type WSHeartbeat = { type: "hb"; ts: string; channel?: string };
 export type WSError = { type: "error"; channel?: string; detail: string; ts?: string };
 
-// NOVO: snapshot de alerts enviado no on-open de /ws/alerts
 export type WSMessageAlertsSnapshot = {
   type: "alerts";
   ts: string;
@@ -991,10 +973,10 @@ export type WSHandlers = {
 };
 
 export type WSOptions = {
-  manageVisibility?: boolean; // pausa quando hidden e retoma quando visible
-  fallbackSnapshot?: "live" | "monitoring" | null; // liga polling de snapshot quando sem WS
-  fallbackIntervalMs?: number; // 200 para live, 2000 para monitoring
-  maxBackoffMs?: number; // 10000 por padrão
+  manageVisibility?: boolean;
+  fallbackSnapshot?: "live" | "monitoring" | null;
+  fallbackIntervalMs?: number;
+  maxBackoffMs?: number;
 };
 
 function wsUrl(path: string) {
@@ -1009,7 +991,6 @@ export type WSHandle = {
   resume(): void;
   close(code?: number, reason?: string): void;
   isOpen(): boolean;
-  /** socket atual (ou null se pausado/fechado) */
   socket(): WebSocket | null;
 };
 
@@ -1076,7 +1057,7 @@ function startSnapshotFallback(
   };
   // @ts-ignore
   const id = typeof window !== "undefined" ? window.setInterval(tick, everyMs) : (0 as any);
-  tick(); // primeiro preenchimento
+  tick();
   return id as unknown as number;
 }
 
@@ -1214,7 +1195,7 @@ function openWS(path: string, handlers: WSHandlers = {}, options: WSOptions = {}
 export function openLiveWS(handlers: WSHandlers): WSHandle {
   return openWS("/ws/live", handlers, {
     manageVisibility: true,
-    fallbackSnapshot: null,   // removido: antes "live"
+    fallbackSnapshot: null,
     fallbackIntervalMs: 0,
     maxBackoffMs: 10000,
   });
@@ -1223,7 +1204,7 @@ export function openLiveWS(handlers: WSHandlers): WSHandle {
 export function openMonitoringWS(handlers: WSHandlers): WSHandle {
   return openWS("/ws/monitoring", handlers, {
     manageVisibility: true,
-    fallbackSnapshot: null,   // removido: antes "monitoring"
+    fallbackSnapshot: null,
     fallbackIntervalMs: 0,
     maxBackoffMs: 10000,
   });
@@ -1232,21 +1213,28 @@ export function openMonitoringWS(handlers: WSHandlers): WSHandle {
 export function openSlowWS(handlers: WSHandlers): WSHandle {
   return openWS("/ws/slow", handlers, {
     manageVisibility: true,
-    fallbackSnapshot: null,   // já não terá fallback
+    fallbackSnapshot: null,
     fallbackIntervalMs: 0,
     maxBackoffMs: 10000,
   });
 }
 
-// NOVO: canal de Alerts (snapshot inicial + push on-change)
-export function openAlertsWS(handlers: WSHandlers): WSHandle {
-  // Este canal envia um snapshot inicial {type:"alerts", items:[...]} e depois "push" on-change.
-  return openWS("/ws/alerts", handlers, {
-    manageVisibility: true,
-    fallbackSnapshot: null,       // sem fallback HTTP aqui; snapshot já vem no on-open
-    fallbackIntervalMs: 0,
-    maxBackoffMs: 10000,
-  });
+/* >>>> ALTERADO: openAlertsWS agora é NO-OP (não abre WebSocket) <<<< */
+export function openAlertsWS(_handlers: WSHandlers): WSHandle {
+  let closed = false;
+  return {
+    pause() {},
+    resume() {},
+    close() {
+      closed = true;
+    },
+    isOpen() {
+      return false;
+    },
+    socket() {
+      return null;
+    },
+  };
 }
 
 /* --- Alerts config --- */
@@ -1300,8 +1288,6 @@ export async function getActuatorsStateFastAbortable(signal?: AbortSignal): Prom
     }));
     return { ts, actuators };
   } catch {
-    // Fallbacks legados se o snapshot não existir
     return await getActuatorsStateFast();
   }
 }
-
