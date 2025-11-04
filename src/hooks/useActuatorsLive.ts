@@ -1,206 +1,182 @@
 // src/hooks/useActuatorsLive.ts
 import { useEffect, useRef, useState } from "react";
-import { getActuatorsStateFast } from "@/lib/api";
 
-/** Shape do payload que o backend devolve em /api/live/snapshot (compat) */
+/** Shape legado que os componentes esperam */
 export type ActuatorLiveItem = {
-  /** Pode vir como id ou actuator_id dependendo da rota; normalizamos em publish() */
   id?: 1 | 2 | number;
   actuator_id?: 1 | 2 | number;
-  state: string;                 // "RECUADO" | "AVANÇADO" | ...
-  pending: string | null;        // "AV" | "REC" | null
-  fault?: string | null;         // opcional no backend
-  elapsed_ms?: number;           // opcional (debug)
-  started_at?: string | null;    // ISO ou null
+  state: string;                 // "RECUADO" | "AVANCADO"
+  pending: string | null;        // "AV" | "REC" | null  (mantemos null por ora)
+  fault?: string | null;
+  elapsed_ms?: number;
+  started_at?: string | null;
 };
 
 export type LiveState = {
-  ts: string;
-  actuators: ActuatorLiveItem[];
+  ts: string;                    // ISO
+  actuators: ActuatorLiveItem[]; // [{id:1,...},{id:2,...}]
 } | null;
 
-const REFRESH_MS = 1500; // 1500–3000 ms costuma ser um bom compromisso
+/* ===========================
+   WS singleton (sem polling)
+   =========================== */
 
-// ---------- Singleton global para compartilhar polling entre componentes ----------
-let globalCache: LiveState = null;
-let globalListeners = new Set<(s: LiveState) => void>();
-let globalTimer: number | null = null;
-let fetching = false;
+type LiveWsMsg = {
+  type: "live" | "hb";
+  ts_ms?: number;
+  snapshot?: boolean;
+  a1?: {
+    state?: string | null;          // compat do backend
+    state_ascii?: "AVANCADO" | "RECUADO" | null;
+    is_avancado?: boolean;
+    is_recuado?: boolean;
+    s1?: number; s2?: number;
+  };
+  a2?: {
+    state?: string | null;
+    state_ascii?: "AVANCADO" | "RECUADO" | null;
+    is_avancado?: boolean;
+    is_recuado?: boolean;
+    s1?: number; s2?: number;
+  };
+};
 
-/** Compara dois estados e só notifica se houver mudança relevante */
+let wsRef: WebSocket | null = null;
+let listeners = new Set<(s: LiveState) => void>();
+let cache: LiveState = null;
+let reconnectTimer: number | null = null;
+let lastHash = ""; // dedupe
+
+function normAscii(s: string | null | undefined): "AVANCADO" | "RECUADO" | null {
+  if (!s) return null;
+  const x = s.replace("Ç", "C");
+  if (x === "AVANCADO") return "AVANCADO";
+  if (x === "RECUADO") return "RECUADO";
+  return null;
+}
+
+function wsBase(): string {
+  // tenta usar a mesma origem do front
+  const loc = window.location;
+  const proto = loc.protocol === "https:" ? "wss:" : "ws:";
+  const host = loc.host; // inclui porta
+  return `${proto}//${host}`;
+}
+
+function buildWsUrl(): string {
+  return `${wsBase()}/ws/live`;
+}
+
 function publish(next: LiveState) {
-  // 1) Se nunca tivemos cache, publica direto
-  if (!globalCache || !next) {
-    globalCache = next;
-    globalListeners.forEach((fn) => fn(globalCache));
-    return;
-  }
+  // dedupe raso por hash
+  const key = JSON.stringify(next);
+  if (key === lastHash) return;
+  lastHash = key;
 
-  // 2) Comparação superficial de ts
-  const prevTs = globalCache.ts;
-  const nextTs = next.ts;
-  if (prevTs !== nextTs) {
-    globalCache = next;
-    globalListeners.forEach((fn) => fn(globalCache));
-    return;
-  }
-
-  // 3) Normalização leve: id sempre presente
-  const prevActs = globalCache.actuators ?? [];
-  const nextActs = next.actuators ?? [];
-
-  if (prevActs.length !== nextActs.length) {
-    globalCache = next;
-    globalListeners.forEach((fn) => fn(globalCache));
-    return;
-  }
-
-  // 4) Comparação elemento a elemento (com guards para undefined)
-  let sameActs = true;
-  for (let i = 0; i < nextActs.length; i++) {
-    const a = prevActs[i] ?? null; // <-- evita 'possibly undefined'
-    const b = nextActs[i] ?? null; // <-- evita 'possibly undefined'
-    if (!a || !b) {
-      sameActs = false;
-      break;
-    }
-
-    const aId = (a.id ?? a.actuator_id) as number | undefined;
-    const bId = (b.id ?? b.actuator_id) as number | undefined;
-
-    if (
-      aId !== bId ||
-      (a.state ?? "") !== (b.state ?? "") ||
-      (a.pending ?? null) !== (b.pending ?? null) ||
-      (a.fault ?? null) !== (b.fault ?? null) ||
-      (a.elapsed_ms ?? -1) !== (b.elapsed_ms ?? -1) ||
-      (a.started_at ?? null) !== (b.started_at ?? null)
-    ) {
-      sameActs = false;
-      break;
-    }
-  }
-
-  if (!sameActs) {
-    globalCache = next;
-    globalListeners.forEach((fn) => fn(globalCache));
-  }
+  cache = next;
+  listeners.forEach((fn) => fn(cache));
 }
 
-async function tickOnce() {
-  if (fetching) return;
-  fetching = true;
-  try {
-    // getActuatorsStateFast() deve retornar algo no shape { ts, actuators }
-    const data = await getActuatorsStateFast();
-    // Segurança: garante que os itens tenham sempre a chave "id"
-    const normalized: LiveState =
-      data && Array.isArray(data.actuators)
-        ? {
-            ts: String(data.ts ?? new Date().toISOString()),
-            actuators: data.actuators.map((it: any) => ({
-              id: (it?.id ?? it?.actuator_id) as number,
-              actuator_id: (it?.actuator_id ?? it?.id) as number,
-              state: String(it?.state ?? ""),
-              pending: (it?.pending ?? null) as string | null,
-              fault: (it?.fault ?? null) as string | null,
-              elapsed_ms: typeof it?.elapsed_ms === "number" ? it.elapsed_ms : undefined,
-              started_at: (it?.started_at ?? null) as string | null,
-            })),
-          }
-        : null;
+function toLegacyState(msg: LiveWsMsg): LiveState | null {
+  if (msg.type !== "live") return cache; // ignora 'hb'
+  const ts = msg.ts_ms ? new Date(msg.ts_ms).toISOString() : new Date().toISOString();
 
-    publish(normalized);
-  } catch {
-    // silencioso – manteremos o último bom estado
-  } finally {
-    fetching = false;
-  }
-}
-
-function startGlobalLoop() {
-  if (globalTimer != null) return;
-
-  const loop = async () => {
-    // pausa quando a aba estiver oculta (economiza CPU/Rede)
-    if (typeof document !== "undefined" && document.hidden) return;
-    await tickOnce();
+  // a1
+  const s1 = normAscii(msg.a1?.state_ascii ?? (msg.a1?.state ?? null));
+  const a1: ActuatorLiveItem = {
+    id: 1,
+    actuator_id: 1,
+    state: s1 ?? "",
+    pending: null,
+    fault: null,
+    started_at: null,
   };
 
-  // dispara já uma vez
-  void loop();
+  // a2
+  const s2 = normAscii(msg.a2?.state_ascii ?? (msg.a2?.state ?? null));
+  const a2: ActuatorLiveItem = {
+    id: 2,
+    actuator_id: 2,
+    state: s2 ?? "",
+    pending: null,
+    fault: null,
+    started_at: null,
+  };
 
-  // agenda o polling
-  globalTimer = window.setInterval(loop, REFRESH_MS);
+  return {
+    ts,
+    actuators: [a1, a2],
+  };
 }
 
-function stopGlobalLoopIfUnused() {
-  if (globalListeners.size === 0 && globalTimer != null) {
-    window.clearInterval(globalTimer);
-    globalTimer = null;
-  }
+function connect() {
+  if (wsRef) return;
+  const url = buildWsUrl();
+  const ws = new WebSocket(url);
+  wsRef = ws;
+
+  ws.onopen = () => {
+    // limpa backoff pendente
+    if (reconnectTimer != null) {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  };
+
+  ws.onmessage = (ev) => {
+    try {
+      const msg: LiveWsMsg = JSON.parse(ev.data);
+      if (msg.type !== "live") return;
+
+      const state = toLegacyState(msg);
+      publish(state);
+    } catch {
+      // ignora payload inválido
+    }
+  };
+
+  ws.onclose = () => {
+    wsRef = null;
+    // backoff leve (sem polling HTTP)
+    if (reconnectTimer == null) {
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, 800);
+    }
+  };
+
+  ws.onerror = () => {
+    try { ws.close(); } catch {}
+  };
 }
 
-// ---------- Hook público ----------
+function ensureConnected() {
+  if (!wsRef) connect();
+}
+
+/* ============
+   Hook público
+   ============ */
 export function useActuatorsLive() {
-  const [state, setState] = useState<LiveState>(globalCache);
+  const [state, setState] = useState<LiveState>(cache);
   const mountedRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
 
-    // listener local com dedupe barato para evitar re-renders inúteis
     const listener = (s: LiveState) => {
       if (!mountedRef.current) return;
-      setState((prev) => {
-        // caso base: se não temos prev, aceita
-        if (!prev || !s) return s;
-
-        // ts diferente? aceita
-        if (prev.ts !== s.ts) return s;
-
-        const pa = prev.actuators ?? [];
-        const na = s.actuators ?? [];
-        if (pa.length !== na.length) return s;
-
-        for (let i = 0; i < pa.length; i++) {
-          const a = pa[i] ?? null; // <-- evita 'possibly undefined'
-          const b = na[i] ?? null; // <-- evita 'possibly undefined'
-          if (!a || !b) return s;
-
-          const aId = (a.id ?? a.actuator_id) as number | undefined;
-          const bId = (b.id ?? b.actuator_id) as number | undefined;
-
-          if (
-            aId !== bId ||
-            (a.state ?? "") !== (b.state ?? "") ||
-            (a.pending ?? null) !== (b.pending ?? null) ||
-            (a.fault ?? null) !== (b.fault ?? null) ||
-            (a.elapsed_ms ?? -1) !== (b.elapsed_ms ?? -1) ||
-            (a.started_at ?? null) !== (b.started_at ?? null)
-          ) {
-            return s;
-          }
-        }
-        // nada mudou
-        return prev;
-      });
+      setState(s);
     };
 
-    globalListeners.add(listener);
-    startGlobalLoop();
-
-    // visibilidade da página: quando volta a ficar visível, força um tick
-    const onVis = () => {
-      if (!document.hidden) void tickOnce();
-    };
-    document.addEventListener("visibilitychange", onVis);
+    listeners.add(listener);
+    ensureConnected();
 
     return () => {
       mountedRef.current = false;
-      document.removeEventListener("visibilitychange", onVis);
-      globalListeners.delete(listener);
-      stopGlobalLoopIfUnused();
+      listeners.delete(listener);
+      // não fechamos o WS aqui para manter singleton compartilhado
     };
   }, []);
 
