@@ -11,11 +11,10 @@ import { useActuatorSelection } from "@/context/ActuatorSelectionContext";
 export type ThreeDModelProps = { paused?: boolean };
 
 /** ======= Constantes de câmera/fit ======= */
-// Aumentamos o “afastamento”
-const FIT_MULTIPLIER = 1.4;          // 2.2–3.2 deixa confortável
+const FIT_MULTIPLIER = 1.4;
 const INITIAL_DIR = new THREE.Vector3(1.6, 1.2, 1.8).normalize();
-const INITIAL_FOV = 23;              // um pouco mais aberto ajuda
-const EXTRA_FACTOR = 0.2;            // buffer extra proporcional ao raio
+const INITIAL_FOV = 23;
+const EXTRA_FACTOR = 0.2;
 
 function getModelUrl(which: 1 | 2) {
   try {
@@ -61,7 +60,6 @@ function fitObject(
   const fov = (camera.fov ?? INITIAL_FOV) * (Math.PI / 180);
   const base = radius / Math.sin(fov / 2);
 
-  // distância confortável
   const fitDist = base * FIT_MULTIPLIER + radius * EXTRA_FACTOR;
 
   camera.position.copy(center.clone().add(INITIAL_DIR.clone().multiplyScalar(fitDist)));
@@ -72,7 +70,15 @@ function fitObject(
   return { center, fitDist, radius };
 }
 
-/** ========= GLB + sub-clips (abre/fecha) ========= */
+/** ===== helpers de animação estável ===== */
+function stateToTarget(state: StableState | null): number {
+  return state === "AVANÇADO" ? 1 : 0;
+}
+function damp(current: number, target: number, lambda: number, dt: number) {
+  return current + (target - current) * (1 - Math.exp(-lambda * dt));
+}
+
+/** ========= GLB + scrub do tempo (sem “pulsos”) ========= */
 function ModelAndAnim({
   which,
   paused,
@@ -84,7 +90,7 @@ function ModelAndAnim({
   stateForThisActuator: StableState | null;
   controlsRef: React.RefObject<any>;
 }) {
-  // preload
+  // Pré-carrega GLBs
   useGLTF.preload(getModelUrl(1));
   useGLTF.preload(getModelUrl(2));
 
@@ -92,46 +98,48 @@ function ModelAndAnim({
   const groupRef = useRef<THREE.Group>(null);
   const { camera, gl } = useThree();
   const gltf = useGLTF(url) as any;
-  const { mixer, clips } = useAnimations(gltf.animations || [], groupRef);
 
-  // actions dos sub-clips
-  const openActionRef = useRef<THREE.AnimationAction | null>(null);
-  const closeActionRef = useRef<THREE.AnimationAction | null>(null);
-  const lastPlayedStateRef = useRef<StableState | null>(null);
+  // mixer/clips com root no gltf.scene (garante binding correto)
+  const { mixer, clips } = useAnimations(gltf.animations || [], gltf.scene);
 
-  // cria sub-clipes a partir do primeiro clip do glb + faz o fit e configura zoom
+  // Action base (tocando com timeScale=0 → scrub manual)
+  const baseActionRef = useRef<THREE.AnimationAction | null>(null);
+  const baseDurationRef = useRef<number>(0);
+  const openMaxTimeRef = useRef<number>(0);
+
+  // alvo/posição (0..1)
+  const targetRef = useRef<number>(0);
+  const posRef = useRef<number>(0);
+
+  // cria action base, deixa timeScale=0 e faz fit/controles
   useEffect(() => {
     if (!mixer) return;
+
+    // evita culling de nós animados
+    gltf.scene.traverse((o: any) => {
+      if (o && typeof o === "object") o.frustumCulled = false;
+    });
 
     const base = (clips && clips[0]) as THREE.AnimationClip | undefined;
     if (!base) return;
 
+    const action = mixer.clipAction(base, gltf.scene);
+    action.setLoop(THREE.LoopOnce, 0);
+    action.clampWhenFinished = true;
+    action.enabled = true;
+    action.setEffectiveWeight(1);
+    action.setEffectiveTimeScale(0); // não avança sozinho
+    action.play();
+
+    baseActionRef.current = action;
+    baseDurationRef.current = base.duration;
+
+    // frames → segundos (usa FRAMES do arquivo)
     const { total, openEnd } = FRAMES[which];
-    const fps = total / base.duration;
+    const framesToSec = (f: number) => (f / total) * base.duration;
+    openMaxTimeRef.current = framesToSec(openEnd);
 
-    const openClip = THREE.AnimationUtils.subclip(base, `OPEN_SUB_A${which}`, 0, openEnd, fps);
-    const closeClip = THREE.AnimationUtils.subclip(base, `CLOSE_SUB_A${which}`, openEnd, total, fps);
-
-    const openAction = mixer.clipAction(openClip, groupRef.current || undefined);
-    const closeAction = mixer.clipAction(closeClip, groupRef.current || undefined);
-
-    [openAction, closeAction].forEach((a) => {
-      a.setLoop(THREE.LoopOnce, 1);
-      a.clampWhenFinished = true;
-      a.enabled = true;
-      a.paused = false;
-      a.time = 0;
-      a.weight = 1;
-      a.stop();
-    });
-
-    openActionRef.current?.stop();
-    closeActionRef.current?.stop();
-    openActionRef.current = openAction;
-    closeActionRef.current = closeAction;
-    lastPlayedStateRef.current = null;
-
-    // Fit e configuração dinâmica do OrbitControls (target + limites de zoom)
+    // Fit + OrbitControls bounds
     if (groupRef.current) {
       const { center, fitDist } = fitObject(
         camera as THREE.PerspectiveCamera,
@@ -143,84 +151,64 @@ function ModelAndAnim({
       if (controls) {
         controls.target.copy(center);
 
-        // === knobs de conforto ===
-        const startDist = fitDist * 1.15; // distância inicial (1.10–1.25)
-        const minDist   = fitDist * 0.65; // zoom mínimo (mais perto)
-        const maxDist   = fitDist * 3.0;  // zoom máximo (mais longe)
+        const startDist = fitDist * 1.15;
+        const minDist = fitDist * 0.65;
+        const maxDist = fitDist * 3.0;
 
-        // posiciona a câmera exatamente na distância desejada
         const dir = new THREE.Vector3().subVectors(camera.position, center).normalize();
         camera.position.copy(center.clone().add(dir.multiplyScalar(startDist)));
         camera.updateProjectionMatrix();
 
-        // aplica limites do OrbitControls
         controls.minDistance = Math.max(0.1, minDist);
         controls.maxDistance = Math.max(controls.minDistance + 0.01, maxDist);
         controls.enableZoom = true;
         controls.zoomSpeed = 1.0;
         controls.enableDamping = true;
         controls.dampingFactor = 0.08;
-
         controls.update();
       }
     }
 
     return () => {
-      openAction.stop();
-      closeAction.stop();
-      mixer.uncacheAction(openClip, groupRef.current || undefined);
-      mixer.uncacheAction(closeClip, groupRef.current || undefined);
+      try {
+        action.stop();
+      } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url, mixer]);
 
-  // dispara a ação certa quando o estado (aberto/fechado) muda
+  // alvo estável quando estado muda
   useEffect(() => {
-    const openAction = openActionRef.current;
-    const closeAction = closeActionRef.current;
-    if (!mixer || !openAction || !closeAction) return;
+    targetRef.current = stateToTarget(stateForThisActuator ?? "DESCONHECIDO");
+  }, [stateForThisActuator]);
 
-    if (paused || !stateForThisActuator || stateForThisActuator === "DESCONHECIDO") {
-      openAction.paused = true;
-      closeAction.paused = true;
-      return;
-    }
-
-    openAction.paused = false;
-    closeAction.paused = false;
-
-    if (lastPlayedStateRef.current === stateForThisActuator) return;
-
-    openAction.stop();
-    closeAction.stop();
-
-    if (stateForThisActuator === "AVANÇADO") {
-      openAction.reset();
-      openAction.timeScale = 1;
-      openAction.fadeIn(0.06).play();
-      lastPlayedStateRef.current = "AVANÇADO";
-    } else {
-      closeAction.reset();
-      closeAction.timeScale = 1;
-      closeAction.fadeIn(0.06).play();
-      lastPlayedStateRef.current = "RECUADO";
-    }
-  }, [paused, stateForThisActuator, mixer]);
-
-  // avança mixer só quando não está pausado
+  // tick: suaviza pos e aplica no mixer (setTime + action.time + update(0))
   useEffect(() => {
     let raf = 0;
     let last = performance.now();
+
     const tick = () => {
       const now = performance.now();
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
-      if (mixer && !paused) mixer.update(dt);
+
+      const lambda = 14;
+      const target = paused ? posRef.current : targetRef.current;
+      posRef.current = damp(posRef.current, target, lambda, dt);
+
+      const t = openMaxTimeRef.current * THREE.MathUtils.clamp(posRef.current, 0, 1);
+
+      if (mixer) {
+        mixer.setTime(t);
+        if (baseActionRef.current) baseActionRef.current.time = t;
+        mixer.update(0); // força aplicação da pose
+      }
+
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [mixer, paused]);
+  }, [paused, mixer]);
 
   return (
     <group ref={groupRef}>
@@ -230,7 +218,7 @@ function ModelAndAnim({
 }
 
 /** ======================= Componente principal ======================= */
-export default function ThreeDModel({ paused }: ThreeDModelProps) {
+function ThreeDModel({ paused }: ThreeDModelProps) {
   const { selectedId, setSelectedId } = useActuatorSelection();
   const [localIdx, setLocalIdx] = useState<1 | 2>(1);
   const which: 1 | 2 = (selectedId === 1 || selectedId === 2) ? (selectedId as 1 | 2) : localIdx;
@@ -243,7 +231,7 @@ export default function ThreeDModel({ paused }: ThreeDModelProps) {
     return (a?.state as StableState) ?? null;
   }, [snapshot?.actuators, which]);
 
-  // Sem snapshot.system no tipo atual: considera OK se o heartbeat é recente (<10s)
+  // Considera OK se o heartbeat é recente (<10s)
   const tsMs = snapshot?.ts ? Date.parse(snapshot.ts) : NaN;
   const isFresh = Number.isFinite(tsMs) ? (Date.now() - tsMs) < 10_000 : false;
   const isSystemOK = isFresh;
@@ -408,3 +396,5 @@ export default function ThreeDModel({ paused }: ThreeDModelProps) {
     </div>
   );
 }
+
+export default ThreeDModel;

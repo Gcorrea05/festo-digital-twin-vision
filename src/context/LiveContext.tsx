@@ -1,3 +1,4 @@
+// src/context/LiveContext.tsx
 import React, {
   createContext,
   useCallback,
@@ -9,12 +10,12 @@ import React, {
 } from "react";
 
 /** ================== Types do backend ================== */
-type StableState = "RECUADO" | "AVANÇADO";
+export type StableState = "RECUADO" | "AVANÇADO" | "DESCONHECIDO";
 type PendingCmd = "AV" | "REC" | null;
 
 export type LiveActuator = {
   id: number;
-  state: StableState;
+  state: StableState | string; // pode vir “AVANCADO” sem cedilha
   pending?: PendingCmd;
 };
 
@@ -51,7 +52,6 @@ export type SlowPayload = {
   items: Array<{ id: number; cycles: number; cpm: number; window_s: number }>;
 };
 
-// Mantemos o tipo de alert para compat, mas não consumimos via WS aqui.
 export type AlertItem = {
   type: "alert";
   ts: string;
@@ -75,6 +75,25 @@ function toWS(path: string) {
   const proto = isSecure ? "wss" : "ws";
   const host = API_BASE.replace(/^https?:\/\//, "");
   return `${proto}://${host}${path}`;
+}
+
+/** ========= Helper p/ posição estável (0/1) a partir do estado ========= */
+export function stateToPosTarget(state?: StableState | null): number {
+  return state === "AVANÇADO" ? 1 : 0; // inclui DESCONHECIDO → 0 (fechado)
+}
+
+/** ========= Normalizador de estado (aceita sem acento/sinônimos) ========= */
+function normalizeStableState(s: unknown): StableState {
+  const raw = String(s ?? "").trim();
+  // remove acentos (NFD) e deixa maiúsculo
+  const v = raw
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase(); // "AVANCADO", "RECUADO", "ABERTO", "FECHADO"...
+
+  if (v === "AVANCADO" || v === "ABERTO" || v === "ABERTA") return "AVANÇADO";
+  if (v === "RECUADO" || v === "FECHADO" || v === "FECHADA") return "RECUADO";
+  return "DESCONHECIDO";
 }
 
 /** ================== WS Manager simples com backoff ================== */
@@ -134,7 +153,7 @@ class WSClient {
     this.clearPing();
     this.hbTimer = setInterval(() => {
       try {
-        this.ws?.send?.("hb"); // mantêm conexão ativa
+        this.ws?.send?.("hb");
       } catch {}
     }, 9000);
   }
@@ -158,22 +177,17 @@ class WSClient {
 
 /** ================== Estado do Contexto ================== */
 type LiveContextState = {
-  // pacote “live”
   snapshot: {
     ts: string | null;
     actuators: LiveActuator[];
     mpu: LiveMPU[];
   };
-  // pacote “monitoring”
   timings: Record<
     number,
     { dt_abre_s: number | null; dt_fecha_s: number | null; dt_ciclo_s: number | null }
   >;
-  // pacote “slow” (cpm)
   cpm: Record<number, { cycles: number; cpm: number; window_s: number; ts: string }>;
-  // pacote “alerts” — mantemos, mas sem WS aqui (preenchido em outra tela se precisar)
   alerts: AlertItem[];
-  // helpers
   getActuator: (id: number) => LiveActuator | undefined;
 };
 
@@ -185,7 +199,7 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [actuators, setActuators] = useState<LiveActuator[]>([]);
   const [mpu, setMpu] = useState<LiveMPU[]>([]);
 
-  // ===== monitoring (timings) =====
+  // ===== monitoring =====
   const timingsRef = useRef<
     Record<number, { dt_abre_s: number | null; dt_fecha_s: number | null; dt_ciclo_s: number | null }>
   >({});
@@ -195,7 +209,7 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
     {}
   );
 
-  // ===== alerts (sem WS aqui; deixamos vazio/compat) =====
+  // ===== alerts (compat) =====
   const alertsRef = useRef<AlertItem[]>([]);
 
   // throttling leve pro “live”
@@ -207,7 +221,14 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
     livePendingRef.current = null;
     if (!payload) return;
     setLiveTs(payload.ts);
-    setActuators(payload.actuators || []);
+
+    // ⚠️ Normaliza os estados que chegaram no WS
+    const normActuators = (payload.actuators || []).map((a) => ({
+      ...a,
+      state: normalizeStableState(a.state),
+    })) as LiveActuator[];
+
+    setActuators(normActuators);
     setMpu(payload.mpu || []);
   }, []);
 
@@ -225,7 +246,17 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         const data: LivePayload = JSON.parse(ev.data);
         if (data?.type !== "live") return;
-        livePendingRef.current = data;
+
+        // normaliza ANTES de enfileirar (garante consistência para quem ler livePendingRef)
+        const norm = {
+          ...data,
+          actuators: (data.actuators || []).map((a) => ({
+            ...a,
+            state: normalizeStableState(a.state),
+          })),
+        } as LivePayload;
+
+        livePendingRef.current = norm;
         scheduleFlushLive();
       } catch {}
     },
@@ -265,7 +296,7 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {}
   }, []);
 
-  // ===== Conexões WS (alerts REMOVIDO) =====
+  // ===== Conexões WS =====
   useEffect(() => {
     const wsLive = new WSClient(toWS("/ws/live"), onLiveMessage);
     const wsMon = new WSClient(toWS("/ws/monitoring"), onMonitoringMessage);
@@ -288,7 +319,7 @@ export const LiveProvider: React.FC<{ children: React.ReactNode }> = ({ children
       snapshot: { ts: liveTs, actuators, mpu },
       timings: timingsRef.current,
       cpm: cpmRef.current,
-      alerts: alertsRef.current, // permanece disponível, porém não é populado aqui
+      alerts: alertsRef.current,
       getActuator: (id: number) => (actuators || []).find((a) => a.id === id),
     }),
     [liveTs, actuators, mpu]
