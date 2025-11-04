@@ -8,7 +8,17 @@ import { useLive } from "@/context/LiveContext";
 import { useActuatorSelection } from "@/context/ActuatorSelectionContext";
 
 /** ======= Props ======= */
-export type ThreeDModelProps = { paused?: boolean };
+export type ThreeDModelProps = {
+  paused?: boolean;
+  /** (Simulation) suaviza tempo do scrub por estado (1 = original; <1 mais lento) */
+  simSpeed?: number;
+  /** (Simulation) suaviza amortecimento (1 = original; <1 mais manteiga) */
+  simLambda?: number;
+  /** (Simulation) roda ciclo completo (abrir-fechar-abrir...) */
+  simPlayFull?: boolean;
+  /** (Simulation) velocidade do ciclo completo (fração 0..1 por segundo) */
+  simCycleSpeed?: number;
+};
 
 /** ======= Constantes de câmera/fit ======= */
 const FIT_MULTIPLIER = 1.4;
@@ -78,17 +88,25 @@ function damp(current: number, target: number, lambda: number, dt: number) {
   return current + (target - current) * (1 - Math.exp(-lambda * dt));
 }
 
-/** ========= GLB + scrub do tempo (sem “pulsos”) ========= */
+/** ========= GLB + scrub do tempo ========= */
 function ModelAndAnim({
   which,
   paused,
   stateForThisActuator,
   controlsRef,
+  speedMul,
+  lambdaMul,
+  playFull,
+  cycleSpeed,
 }: {
   which: 1 | 2;
   paused: boolean;
   stateForThisActuator: StableState | null;
   controlsRef: React.RefObject<any>;
+  speedMul: number;
+  lambdaMul: number;
+  playFull: boolean;
+  cycleSpeed: number;
 }) {
   // Pré-carrega GLBs
   useGLTF.preload(getModelUrl(1));
@@ -99,10 +117,9 @@ function ModelAndAnim({
   const { camera, gl } = useThree();
   const gltf = useGLTF(url) as any;
 
-  // mixer/clips com root no gltf.scene (garante binding correto)
+  // mixer/clips com root no gltf.scene
   const { mixer, clips } = useAnimations(gltf.animations || [], gltf.scene);
 
-  // Action base (tocando com timeScale=0 → scrub manual)
   const baseActionRef = useRef<THREE.AnimationAction | null>(null);
   const baseDurationRef = useRef<number>(0);
   const openMaxTimeRef = useRef<number>(0);
@@ -111,11 +128,13 @@ function ModelAndAnim({
   const targetRef = useRef<number>(0);
   const posRef = useRef<number>(0);
 
+  // para ciclo completo
+  const dirRef = useRef<1 | -1>(1);          // 1 = abrindo, -1 = fechando
+
   // cria action base, deixa timeScale=0 e faz fit/controles
   useEffect(() => {
     if (!mixer) return;
 
-    // evita culling de nós animados
     gltf.scene.traverse((o: any) => {
       if (o && typeof o === "object") o.frustumCulled = false;
     });
@@ -128,18 +147,16 @@ function ModelAndAnim({
     action.clampWhenFinished = true;
     action.enabled = true;
     action.setEffectiveWeight(1);
-    action.setEffectiveTimeScale(0); // não avança sozinho
+    action.setEffectiveTimeScale(0);
     action.play();
 
     baseActionRef.current = action;
     baseDurationRef.current = base.duration;
 
-    // frames → segundos (usa FRAMES do arquivo)
     const { total, openEnd } = FRAMES[which];
     const framesToSec = (f: number) => (f / total) * base.duration;
     openMaxTimeRef.current = framesToSec(openEnd);
 
-    // Fit + OrbitControls bounds
     if (groupRef.current) {
       const { center, fitDist } = fitObject(
         camera as THREE.PerspectiveCamera,
@@ -170,45 +187,67 @@ function ModelAndAnim({
     }
 
     return () => {
-      try {
-        action.stop();
-      } catch {}
+      try { action.stop(); } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url, mixer]);
 
-  // alvo estável quando estado muda
+  // alvo estável quando estado muda (modo scrub por estado)
   useEffect(() => {
     targetRef.current = stateToTarget(stateForThisActuator ?? "DESCONHECIDO");
   }, [stateForThisActuator]);
 
-  // tick: suaviza pos e aplica no mixer (setTime + action.time + update(0))
+  // tick
   useEffect(() => {
     let raf = 0;
     let last = performance.now();
 
     const tick = () => {
       const now = performance.now();
-      const dt = Math.min(0.05, (now - last) / 1000);
+      const dtRaw = Math.min(0.05, (now - last) / 1000);
       last = now;
 
-      const lambda = 14;
-      const target = paused ? posRef.current : targetRef.current;
-      posRef.current = damp(posRef.current, target, lambda, dt);
+      // ajuste de tempo/lamda para simulation
+      const dtAdj = dtRaw * (Number.isFinite(speedMul) ? speedMul : 1);
+      const lambdaAdj = 14 * (Number.isFinite(lambdaMul) ? lambdaMul : 1);
 
-      const t = openMaxTimeRef.current * THREE.MathUtils.clamp(posRef.current, 0, 1);
+      if (!paused && playFull) {
+        // ciclo ping-pong em 0..1
+        const v = Math.max(0.05, cycleSpeed); // evita travar
+        posRef.current += dtAdj * v * dirRef.current as number;
+        if (posRef.current >= 1) {
+          posRef.current = 1;
+          dirRef.current = -1;
+        } else if (posRef.current <= 0) {
+          posRef.current = 0;
+          dirRef.current = 1;
+        }
 
-      if (mixer) {
-        mixer.setTime(t);
-        if (baseActionRef.current) baseActionRef.current.time = t;
-        mixer.update(0); // força aplicação da pose
+        // usa duração COMPLETA do clipe para varrer abertura+fechamento
+        const fullT = baseDurationRef.current * THREE.MathUtils.clamp(posRef.current, 0, 1);
+        if (mixer) {
+          mixer.setTime(fullT);
+          if (baseActionRef.current) baseActionRef.current.time = fullT;
+          mixer.update(0);
+        }
+      } else {
+        // modo original (scrub por estado + damping)
+        const target = paused ? posRef.current : targetRef.current;
+        posRef.current = damp(posRef.current, target, lambdaAdj, dtAdj);
+
+        const t = openMaxTimeRef.current * THREE.MathUtils.clamp(posRef.current, 0, 1);
+        if (mixer) {
+          mixer.setTime(t);
+          if (baseActionRef.current) baseActionRef.current.time = t;
+          mixer.update(0);
+        }
       }
 
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [paused, mixer]);
+  }, [paused, mixer, speedMul, lambdaMul, playFull, cycleSpeed]);
 
   return (
     <group ref={groupRef}>
@@ -218,7 +257,13 @@ function ModelAndAnim({
 }
 
 /** ======================= Componente principal ======================= */
-function ThreeDModel({ paused }: ThreeDModelProps) {
+function ThreeDModel({
+  paused,
+  simSpeed,
+  simLambda,
+  simPlayFull,
+  simCycleSpeed,
+}: ThreeDModelProps) {
   const { selectedId, setSelectedId } = useActuatorSelection();
   const [localIdx, setLocalIdx] = useState<1 | 2>(1);
   const which: 1 | 2 = (selectedId === 1 || selectedId === 2) ? (selectedId as 1 | 2) : localIdx;
@@ -231,7 +276,7 @@ function ThreeDModel({ paused }: ThreeDModelProps) {
     return (a?.state as StableState) ?? null;
   }, [snapshot?.actuators, which]);
 
-  // Considera OK se o heartbeat é recente (<10s)
+  // heartbeat recente (<10s)
   const tsMs = snapshot?.ts ? Date.parse(snapshot.ts) : NaN;
   const isFresh = Number.isFinite(tsMs) ? (Date.now() - tsMs) < 10_000 : false;
   const isSystemOK = isFresh;
@@ -283,6 +328,15 @@ function ThreeDModel({ paused }: ThreeDModelProps) {
 
   // ref para controlar zoom/target dinamicamente
   const controlsRef = useRef<any>(null);
+
+  // Detecta página /simulation para defaults suaves — Live fica intacto
+  const isSimulation =
+    typeof window !== "undefined" && window.location.pathname.includes("/simulation");
+
+  const speedMul = isSimulation ? (simSpeed ?? 0.85) : 1.0;
+  const lambdaMul = isSimulation ? (simLambda ?? 0.9) : 1.0;
+  const playFull = isSimulation ? (simPlayFull ?? true) : false;
+  const cycleSpeed = isSimulation ? (simCycleSpeed ?? 0.45) : 0.45;
 
   return (
     <div className="relative w-full rounded-2xl border border-white/10 bg-[#0a0f1a]/40 p-4">
@@ -349,6 +403,10 @@ function ThreeDModel({ paused }: ThreeDModelProps) {
                 paused={effectivePaused}
                 stateForThisActuator={stateForThisActuator}
                 controlsRef={controlsRef}
+                speedMul={speedMul}
+                lambdaMul={lambdaMul}
+                playFull={playFull}
+                cycleSpeed={cycleSpeed}
               />
 
               <OrbitControls
@@ -356,7 +414,6 @@ function ThreeDModel({ paused }: ThreeDModelProps) {
                 makeDefault
                 enableRotate
                 enablePan={false}
-                // min/maxDistance serão setados dinamicamente após o fit
               />
             </Suspense>
           </Canvas>

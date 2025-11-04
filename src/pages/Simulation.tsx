@@ -12,13 +12,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
+/** ================== Tipos ================== */
 type CatalogItem = {
   id: number;
   code: string;
   name: string;
-  grp: string;
-  label: string;
+  grp: string; // pode vir como `group` no backend; normalizamos
   severity?: number;
+  [k: string]: any;
 };
 
 type Scenario = {
@@ -41,10 +42,29 @@ const FRIENDLY: Record<string, string> = {
   NO_SAMPLES: "Sem telemetria recente",
 };
 
-// atraso aleatório 3–5s — usa Promise para garantir espera real
+// atraso aleatório 3–5s
 function delay3to5s() {
   const ms = 3000 + Math.floor(Math.random() * 2001);
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+// Normaliza itens recebidos do backend (grp vs group, name obrigatório)
+function normalizeCatalog(items: any[]): CatalogItem[] {
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((raw) => {
+      const grp = raw.grp ?? raw.group ?? "Outros";
+      const name = raw.name ?? raw.label ?? raw.code ?? "Sem nome";
+      return {
+        id: Number(raw.id),
+        code: String(raw.code),
+        name: String(name),
+        grp: String(grp),
+        severity: raw.severity != null ? Number(raw.severity) : undefined,
+        ...raw,
+      } as CatalogItem;
+    })
+    .filter((x) => Number.isFinite(x.id) && !!x.code);
 }
 
 export default function Simulation() {
@@ -76,9 +96,9 @@ export default function Simulation() {
     try {
       setCatLoading(true);
       setCatError(null);
-      const j = await fetchJson<{ items: CatalogItem[] }>("/api/simulation/catalog");
+      const j = await fetchJson<{ items: any[] }>("/api/simulation/catalog");
       if (!alive.current) return;
-      setCatalog(Array.isArray(j?.items) ? j.items : []);
+      setCatalog(normalizeCatalog(j?.items ?? []));
     } catch (e: any) {
       if (!alive.current) return;
       setCatError(e?.message ?? "Falha ao carregar catálogo");
@@ -131,7 +151,7 @@ export default function Simulation() {
 
       if (j?.ui?.show_popup !== false) {
         setOpenDlg(true);
-        setPaused3D(true);       // pausa junto com o pop-up
+        setPaused3D(true); // pausa junto com o pop-up
       } else if (j?.ui?.halt_3d) {
         setPaused3D(true);
       }
@@ -143,16 +163,15 @@ export default function Simulation() {
     }
   }
 
+  const sev = scenario?.error?.severity;
   const sevBadge =
-    scenario?.error?.severity != null && (
+    sev != null && (
       <span
         className={`text-white text-sm md:text-base px-2.5 py-1 rounded ${
-          (scenario!.error.severity! >= 4 && "bg-red-600") ||
-          (scenario!.error.severity === 3 && "bg-amber-500") ||
-          "bg-emerald-600"
+          (sev >= 4 && "bg-red-600") || (sev === 3 && "bg-amber-500") || "bg-emerald-600"
         }`}
       >
-        Sev {scenario!.error.severity}
+        Sev {sev}
       </span>
     );
 
@@ -194,8 +213,8 @@ export default function Simulation() {
                   onChange={(e) => {
                     setSelectedCode(e.target.value);
                     setScenario(null);
-                    setPaused3D(true);           // volta pausado
-                    setModelKey((k) => k + 1);   // RESET: retorna à pose inicial
+                    setPaused3D(true); // volta pausado
+                    setModelKey((k) => k + 1); // RESET: retorna à pose inicial
                   }}
                 >
                   <option value="" disabled>
@@ -209,8 +228,15 @@ export default function Simulation() {
                   {Object.entries(grouped).map(([grp, entries]) => (
                     <optgroup key={grp} label={grp}>
                       {entries.map(({ code, items }) => (
-                        <option key={code} value={code} title={items.map((x) => x.label).join(" | ")}>
-                          {(FRIENDLY[code] || items[0]?.name || code)} ({code})
+                        <option
+                          key={code}
+                          value={code}
+                          title={items
+                            .map((x) => (x?.name ?? x?.code ?? "").toString())
+                            .filter(Boolean)
+                            .join(" | ")}
+                        >
+                          {(FRIENDLY[code] || items[0]?.name || code) + ` (${code})`}
                         </option>
                       ))}
                     </optgroup>
@@ -243,28 +269,26 @@ export default function Simulation() {
           open={openDlg}
           onOpenChange={(open) => {
             setOpenDlg(open);
-            if (!open) {
-              setPaused3D(true);
-            }
+            if (!open) setPaused3D(true);
           }}
         >
           <DialogContent className="sm:max-w-lg bg-slate-900 text-slate-100 border border-slate-700">
-            {scenario && (
+            {scenario ? (
               <>
                 <DialogHeader className="space-y-1">
                   <DialogTitle className="flex items-center gap-2 text-xl md:text-2xl">
-                    {scenario.error.name}
+                    {scenario.error?.name ?? "Sem nome"}
                     {sevBadge}
                   </DialogTitle>
                   <DialogDescription className="text-slate-300 text-base">
-                    Causa: {scenario.cause}
+                    Causa: {scenario.cause ?? "—"}
                   </DialogDescription>
                 </DialogHeader>
 
                 <div className="pt-1">
                   <div className="text-base font-semibold mb-2">Ações sugeridas:</div>
                   <ul className="list-disc ml-4 space-y-1 text-base">
-                    {scenario.actions.map((a, i) => (
+                    {(scenario.actions ?? []).map((a, i) => (
                       <li key={i}>{a}</li>
                     ))}
                   </ul>
@@ -310,7 +334,7 @@ export default function Simulation() {
                   )}
                 </div>
               </>
-            )}
+            ) : null}
           </DialogContent>
         </Dialog>
       </div>
