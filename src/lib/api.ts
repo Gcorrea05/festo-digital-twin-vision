@@ -527,6 +527,27 @@ export async function getMinuteAgg(act: "A1" | "A2", since: string): Promise<Min
   return tryMinuteAggMany(act, since);
 }
 
+export type MinuteAggRow = {
+  minute: string;           // ISO em UTC (…:00Z)
+  t_open_ms_avg: number;
+  t_close_ms_avg: number;
+  t_cycle_ms_avg: number;
+  runtime_s: number;
+  cpm: number;
+  vib_avg: number | null;
+};
+
+export type WSMessageMinuteAgg = {
+  type: "minute-agg";
+  ts: string;               // ISO UTC (emissão)
+  minute: string;           // ISO UTC do minuto agregado (…:00Z)
+  items: Array<{
+    actuator: "A1" | "A2";
+    row: MinuteAggRow;
+  }>;
+};
+
+
 /* ======================
    CPM × Runtime (via OPC — fallback robusto)
    ====================== */
@@ -999,6 +1020,7 @@ export type AnyWSMessage =
   | WSMessageAlert
   | WSMessageAlertsSnapshot
   | WSHeartbeat
+  | WSMessageMinuteAgg 
   | WSError;
 
 export type WSHandlers = {
@@ -1270,29 +1292,45 @@ export function openMonitoringWS(handlers: WSHandlers): WSHandle {
   });
 }
 
-// >>> Compat aqui: além de repassar "cpm", acrescentamos msg.actuators normalizado
 export function openSlowWS(handlers: WSHandlers): WSHandle {
   const wrap: WSHandlers = {
     ...handlers,
     onMessage: (m: AnyWSMessage) => {
-      if ((m as any)?.type === "cpm") {
-        const msg = m as WSMessageCPM;
-        const rawItems = Array.isArray(msg.items) ? msg.items : [];
-        const normalized = rawItems
-          .map((it) => ({
-            id: Number((it as any).id ?? (it as any).actuator_id),
-            cpm: Number((it as any).cpm ?? 0),
-            window_s: (it as any).window_s != null ? Number((it as any).window_s) : undefined,
-          }))
-          .filter((x) => Number.isFinite(x.id));
-        // expõe compat para código legado
-        (msg as WSMessageCPM).actuators = normalized;
-        handlers.onMessage?.(msg);
-        return;
+      try {
+        const t = (m as any)?.type;
+
+        // ---------- Compat CPM: expõe `msg.actuators` ----------
+        if (t === "cpm") {
+          const msg = m as WSMessageCPM;
+          const rawItems: any[] = Array.isArray((msg as any).items) ? (msg as any).items : [];
+          const normalized: Array<{ id: number; cpm: number; window_s?: number }> = rawItems
+            .map((it: any) => ({
+              id: Number((it?.id ?? it?.actuator_id)),
+              cpm: Number(it?.cpm ?? 0),
+              window_s: it?.window_s != null ? Number(it.window_s) : undefined,
+            }))
+            .filter((x: { id: number }) => Number.isFinite(x.id));
+          (msg as any).actuators = normalized; // <- legado
+          handlers.onMessage?.(msg);
+          return;
+        }
+
+        // ---------- minute-agg: apenas repassa ao chamador ----------
+        if (t === "minute-agg") {
+          handlers.onMessage?.(m as unknown as WSMessageMinuteAgg);
+          return;
+        }
+
+        // Outros tipos ("hb", "slow", "alerts", etc.) passam direto
+      } catch {
+        // Em caso de erro de parse/shape, apenas delega a mensagem "crua"
       }
+
       handlers.onMessage?.(m);
     },
   };
+
+  // Mantém as mesmas opções (visibilidade, sem snapshot/fallback, backoff 10s)
   return openWS("/ws/slow", wrap, {
     manageVisibility: true,
     fallbackSnapshot: null,

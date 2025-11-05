@@ -11,11 +11,10 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
-  // ❗ se precisar tipar algo daqui, use import type { ... } from "recharts"
 } from "recharts";
 import { ChartContainer, ChartTooltipContent } from "@/components/ui/chart";
 import { useMpuIds, useMpuHistory } from "@/hooks/useMpu";
-import { getMinuteAgg } from "@/lib/api";
+import { getMinuteAgg, openSlowWS, type WSMessageMinuteAgg } from "@/lib/api";
 import { useActuatorSelection } from "@/context/ActuatorSelectionContext";
 
 /* ========================= Utils ========================= */
@@ -51,13 +50,11 @@ const toMinuteIsoUTC = (dOrStr?: Date | string): string => {
   ).toISOString();
 };
 const fmtHHMM = (val: unknown): string => {
-  // aceita string/Date/number/undefined
   const d = new Date(String(val ?? ""));
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 };
 
-// subtrai 1g (usado no dataset vindo da API histórica quando não há RMS)
 const minusG = (v: number | null | undefined) => {
   const n = Number(v);
   return Number.isFinite(n) ? n - 1 : 0;
@@ -67,16 +64,15 @@ const minusG = (v: number | null | undefined) => {
 const C = {
   A1: "#7C3AED",
   A2: "#06B6D4",
-  RUNTIME_A1: "#16A34A",
-  RUNTIME_A2: "#10B981",
 };
 
-/* ========================= Tipos ========================= */
+/* ========================= Tipos locais ========================= */
 type MinuteAgg = {
   minute: string;
   runtime_s: number;
   vib_avg?: number | null;
 };
+
 type MpuRowLike = {
   ts?: string;
   ts_utc?: string;
@@ -105,20 +101,17 @@ type MpuPoint = {
 
 /* ========================= Constantes ========================= */
 const VIB_POLL_MS = 60_000;
+const MAX_MIN = 120;
 
-// Conversão de RAW -> g (±2g por padrão). Ajuste se a faixa for outra.
+// Conversão RAW->g (±2g default)
 const RAW_TO_G = 1 / 16384;
 const pickG = (g?: number, raw?: number) =>
   Number.isFinite(g) ? Number(g) : Number.isFinite(raw) ? Number(raw) * RAW_TO_G : 0;
 
-/* ===== HPF + RMS (vibração dinâmica) ===== */
+/* ===== HPF + RMS ===== */
 type HPFState = {
-  axPrev: number;
-  ayPrev: number;
-  azPrev: number;
-  xPrev: number;
-  yPrev: number;
-  zPrev: number;
+  axPrev: number; ayPrev: number; azPrev: number;
+  xPrev: number;  yPrev: number;  zPrev: number;
 };
 const makeHPF = (alpha: number) => {
   const st: HPFState = { axPrev: 0, ayPrev: 0, azPrev: 0, xPrev: 0, yPrev: 0, zPrev: 0 };
@@ -126,30 +119,25 @@ const makeHPF = (alpha: number) => {
     const fx = alpha * (st.axPrev + ax - st.xPrev);
     const fy = alpha * (st.ayPrev + ay - st.yPrev);
     const fz = alpha * (st.azPrev + az - st.zPrev);
-    st.axPrev = fx;
-    st.ayPrev = fy;
-    st.azPrev = fz;
-    st.xPrev = ax;
-    st.yPrev = ay;
-    st.zPrev = az;
+    st.axPrev = fx; st.ayPrev = fy; st.azPrev = fz;
+    st.xPrev = ax; st.yPrev = ay; st.zPrev = az;
     return { fx, fy, fz };
   };
 };
 
-// agrega RMS por minuto (sobre vetor filtrado por HPF)
 const rmsByMinute = (
   points: { ts: string; ax: number; ay: number; az: number }[],
-  alpha = 0.96 // ~ cutoff ~0.5–1 Hz para 100 Hz
+  alpha = 0.96
 ) => {
   const hpf = makeHPF(alpha);
   const byMin = new Map<string, { sumSq: number; n: number }>();
   for (const p of points) {
     const { fx, fy, fz } = hpf(p.ax, p.ay, p.az);
-    const minute = toMinuteIsoUTC(p.ts);
-    const acc = byMin.get(minute) ?? { sumSq: 0, n: 0 };
+    const m = toMinuteIsoUTC(p.ts);
+    const acc = byMin.get(m) ?? { sumSq: 0, n: 0 };
     acc.sumSq += fx * fx + fy * fy + fz * fz;
     acc.n += 1;
-    byMin.set(minute, acc);
+    byMin.set(m, acc);
   }
   const out: { minute: string; vib: number }[] = [];
   for (const [m, v] of byMin) {
@@ -159,7 +147,7 @@ const rmsByMinute = (
   return out.sort((a, b) => a.minute.localeCompare(b.minute));
 };
 
-/* ===== Unidade dinâmica para exibição (g, mg, µg) ===== */
+/* ===== Unidade dinâmica ===== */
 type Unit = "g" | "mg" | "µg";
 const pickUnit = (maxG: number): Unit => {
   if (!isFinite(maxG) || maxG <= 0) return "g";
@@ -172,21 +160,21 @@ const unitSuffix = (u: Unit) => (u === "g" ? "g" : u === "mg" ? "mg" : "µg");
 
 /* ========================= Página ========================= */
 const Analytics: React.FC = () => {
-  // ===== Fonte da verdade do atuador selecionado =====
+  // ===== Atuador selecionado (A1/A2) =====
   const { selectedId: act, setSelectedId } = useActuatorSelection();
 
-  // ===== Seletor de gráfico (apenas na aba Vibração) =====
+  // ===== Aba de gráfico =====
   type VibraOpt = "vib_runtime" | "vib_compare";
   const [optVib, setOptVib] = useState<VibraOpt>("vib_runtime");
 
-  // ===== IDs de MPU e mapeamento (A1 -> idx 0, A2 -> idx 1) =====
+  // ===== IDs de MPU =====
   const { ids } = useMpuIds();
   const idsArray = useMemo<(string | number)[]>(() => toArray(ids), [ids]);
   const mpuA1 = idsArray[0] != null ? String(idsArray[0]) : null;
   const mpuA2 = idsArray[1] != null ? String(idsArray[1]) : null;
   const mpuId = useMemo(() => (act === 1 ? mpuA1 : mpuA2), [act, mpuA1, mpuA2]);
 
-  // ===== Vibração (histórico bruto – usado no comparativo A1×A2 e fallback) =====
+  // ===== Vibração bruta (para fallback/comparativo) =====
   const { rows: rowsAct } = useMpuHistory(mpuId, "-10m", 2000, true);
   const { rows: rowsA1 } = useMpuHistory(mpuA1, "-10m", 2000, true);
   const { rows: rowsA2 } = useMpuHistory(mpuA2, "-10m", 2000, true);
@@ -200,14 +188,12 @@ const Analytics: React.FC = () => {
         ax: pickG(o.ax_g, o.ax),
         ay: pickG(o.ay_g, o.ay),
         az: pickG(o.az_g, o.az),
-        gx: 0,
-        gy: 0,
-        gz: 0,
+        gx: 0, gy: 0, gz: 0,
       };
     });
   };
 
-  // série principal (atuador selecionado) — para fallback de vib dinâmica/min
+  // série principal (atuador selecionado)
   const actMpuRef = useRef<MpuPoint[]>([]);
   const [mpuChartData, setMpuChartData] = useState<MpuPoint[]>([]);
   useEffect(() => {
@@ -219,40 +205,73 @@ const Analytics: React.FC = () => {
     setMpuChartData(merged);
   }, [rowsAct]);
 
-  // séries para comparação (A1 × A2)
+  // séries para comparação (A1×A2)
   const [mpuA1Data, setMpuA1Data] = useState<MpuPoint[]>([]);
   const [mpuA2Data, setMpuA2Data] = useState<MpuPoint[]>([]);
   useEffect(() => setMpuA1Data(parseMpu(rowsA1 as any)), [rowsA1]);
   useEffect(() => setMpuA2Data(parseMpu(rowsA2 as any)), [rowsA2]);
 
-  // ===== Métricas agregadas por minuto (para Vibração/Runtime do atuador selecionado) =====
+  // ===== Aggregates por minuto (API + WS minute-agg) =====
   const [aggAct, setAggAct] = useState<MinuteAgg[]>([]);
+
+  // carga inicial + poll de segurança
   const loadAgg = useCallback(async () => {
     try {
       const actLabel = act === 1 ? "A1" : "A2";
       const data = await getMinuteAgg(actLabel as "A1" | "A2", "-2h").catch(() => [] as MinuteAgg[]);
-      setAggAct(Array.isArray(data) ? data : []);
+      const rows = Array.isArray(data) ? data : [];
+      // normaliza/limita
+      const map = new Map<string, MinuteAgg>();
+      for (const r of rows) map.set(String(r.minute), { minute: String(r.minute), runtime_s: Number(r.runtime_s ?? 0), vib_avg: r.vib_avg as any });
+      const ordered = Array.from(map.values()).sort((a, b) => a.minute.localeCompare(b.minute)).slice(-MAX_MIN);
+      setAggAct(ordered);
     } catch {
       setAggAct([]);
     }
   }, [act]);
+
   useEffect(() => {
     loadAgg();
     const id = setInterval(loadAgg, VIB_POLL_MS);
     return () => clearInterval(id);
   }, [loadAgg]);
 
-  // ===== Fallback vibração do histórico bruto -> RMS/min (HPF remove gravidade) =====
+  // inscrição no /ws/slow para "minute-agg"
+  useEffect(() => {
+    const dispose = openSlowWS({
+      onMessage: (m) => {
+        if (m?.type !== "minute-agg") return;
+        const msg = m as WSMessageMinuteAgg;
+        const tag = act === 1 ? "A1" : "A2";
+        const hit = msg.items.find((it) => it.actuator === tag);
+        if (!hit) return;
+        const row = hit.row;
+        setAggAct((prev) => {
+          const map = new Map(prev.map((r) => [r.minute, r]));
+          map.set(row.minute, {
+            minute: row.minute,
+            runtime_s: Number(row.runtime_s ?? 0),
+            vib_avg: row.vib_avg,
+          });
+          const ordered = Array.from(map.values()).sort((a, b) => a.minute.localeCompare(b.minute)).slice(-MAX_MIN);
+          return ordered;
+        });
+      },
+    });
+    return () => { try { dispose?.(); } catch {} };
+  }, [act]);
+
+  // ===== Fallback vibração = RMS/min a partir do bruto (HPF remove gravidade) =====
   const vibClientFallback = useMemo(() => {
     const src = mpuChartData;
     if (!src?.length) return [];
     return rmsByMinute(src);
   }, [mpuChartData]);
 
-  // ===== Dados finais para o gráfico Vibração/Runtime =====
+  // ===== Dados finais para Vibração/Runtime =====
   const vibRtPoints = useMemo(() => {
     const apiPoints = (aggAct ?? [])
-      .filter((r) => typeof r.vib_avg === "number" && typeof r.runtime_s === "number")
+      .filter((r) => typeof r.runtime_s === "number")
       .map((r) => ({
         minute: r.minute,
         runtime: r.runtime_s ?? 0,
@@ -262,7 +281,17 @@ const Analytics: React.FC = () => {
     return vibClientFallback;
   }, [aggAct, vibClientFallback]);
 
-  // ===== Unidade e dados escalados (individual) =====
+  // ===== Unidade e dados escalados =====
+  type Unit = "g" | "mg" | "µg";
+  const pickUnit = (maxG: number): Unit => {
+    if (!isFinite(maxG) || maxG <= 0) return "g";
+    if (maxG >= 0.1) return "g";
+    if (maxG >= 0.001) return "mg";
+    return "µg";
+  };
+  const scaleByUnit = (v: number, unit: Unit) => (unit === "g" ? v : unit === "mg" ? v * 1_000 : v * 1_000_000);
+  const unitSuffix = (u: Unit) => (u === "g" ? "g" : u === "mg" ? "mg" : "µg");
+
   const vibRtUnit = useMemo<Unit>(() => {
     const maxV = Math.max(0, ...vibRtPoints.map((p) => Number(p.vib ?? 0)));
     return pickUnit(maxV);
@@ -276,7 +305,7 @@ const Analytics: React.FC = () => {
     }));
   }, [vibRtPoints, vibRtUnit]);
 
-  // ===== Comparativo A1×A2 por minuto usando RMS (HPF) e grade comum UTC =====
+  // ===== Comparativo A1×A2 (RMS/min) =====
   const comparePerMinute = useMemo(() => {
     const a1 = rmsByMinute(mpuA1Data);
     const a2 = rmsByMinute(mpuA2Data);
@@ -289,10 +318,10 @@ const Analytics: React.FC = () => {
     if (allKeys.length === 0) return [];
 
     const first = allKeys[0]!;
-    const last = allKeys[allKeys.length - 1]!;
+    const last  = allKeys[allKeys.length - 1]!;
 
     const startMs = Date.parse(first);
-    const endMs = Date.parse(last);
+    const endMs   = Date.parse(last);
     if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return [];
 
     const STEP = 60_000;
@@ -308,8 +337,7 @@ const Analytics: React.FC = () => {
     return rows;
   }, [mpuA1Data, mpuA2Data]);
 
-  // ===== Unidade e dados escalados (comparativo) =====
-  const cmpUnit = useMemo<Unit>(() => {
+  const cmpUnit: Unit = useMemo(() => {
     const maxV = Math.max(
       0,
       ...comparePerMinute.map((p) => Number(p.vibA1 ?? 0)),
@@ -447,7 +475,7 @@ const Analytics: React.FC = () => {
                     </ResponsiveContainer>
                   )}
                 </ChartContainer>
-                <div className="text-xs opacity-70 mt-2">Atualiza a cada 60 s · Janela -2h · Atuador A{act}</div>
+                <div className="text-xs opacity-70 mt-2">Atualiza por push a cada minuto (WS) · Fallback poll 60s · Janela -2h · Atuador A{act}</div>
               </div>
             </TabsContent>
           </Tabs>
