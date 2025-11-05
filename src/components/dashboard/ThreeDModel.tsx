@@ -214,13 +214,13 @@ function ModelAndAnim({
       if (!paused && playFull) {
         // ciclo ping-pong em 0..1
         const v = Math.max(0.05, cycleSpeed); // evita travar
-        posRef.current += dtAdj * v * dirRef.current as number;
+        posRef.current += (dtAdj * v * dirRef.current) as number;
         if (posRef.current >= 1) {
           posRef.current = 1;
-          dirRef.current = -1;
+          dirRef.current = -1 as -1;
         } else if (posRef.current <= 0) {
           posRef.current = 0;
-          dirRef.current = 1;
+          dirRef.current = 1 as 1;
         }
 
         // usa duração COMPLETA do clipe para varrer abertura+fechamento
@@ -282,7 +282,13 @@ function ThreeDModel({
   const isSystemOK = isFresh;
 
   const [showCamera, setShowCamera] = useState(false);
-  const effectivePaused = (paused ?? false) || !isSystemOK || showCamera;
+
+  // Detecta página /simulation para defaults suaves — Live fica intacto
+  const isSimulation =
+    typeof window !== "undefined" && window.location.pathname.includes("/simulation");
+
+  // ✅ Ajuste: na Simulation ignoramos a exigência de telemetria “fresca”
+  const effectivePaused = (paused ?? false) || (!isSimulation && !isSystemOK) || showCamera;
 
   /** Webcam (fora do Canvas) */
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -328,10 +334,6 @@ function ThreeDModel({
 
   // ref para controlar zoom/target dinamicamente
   const controlsRef = useRef<any>(null);
-
-  // Detecta página /simulation para defaults suaves — Live fica intacto
-  const isSimulation =
-    typeof window !== "undefined" && window.location.pathname.includes("/simulation");
 
   const speedMul = isSimulation ? (simSpeed ?? 0.85) : 1.0;
   const lambdaMul = isSimulation ? (simLambda ?? 0.9) : 1.0;

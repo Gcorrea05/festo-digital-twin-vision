@@ -1,8 +1,9 @@
 // src/components/monitoring/SystemStatusPanel.tsx
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useLive } from "@/context/LiveContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CheckCircle2, XCircle, HelpCircle } from "lucide-react";
+import { openMonitoringWS, type AnyWSMessage } from "@/lib/api";
 
 type Sev = "operational" | "down" | "unknown";
 
@@ -32,15 +33,9 @@ function pill(sev: Sev) {
   }
 }
 
-/* ================= Freshness model =================
-   Derivamos saúde pelo frescor do pacote "live":
-   - ts <= 2s: operational
-   - ts <= 10s: unknown (degraded)
-   - >10s     : down
-*/
+/* ================= Freshness model ================= */
 const OK_MS = 2000;
 const DEG_MS = 10000;
-
 function sevFromTs(ts?: string | null, nowMs = Date.now()): Sev {
   if (!ts) return "unknown";
   const t = Date.parse(ts);
@@ -51,29 +46,84 @@ function sevFromTs(ts?: string | null, nowMs = Date.now()): Sev {
   return "down";
 }
 
+/* ================= Sensors latch via vibration ================= */
+const LATCH_MS = 15000; // mantém “Online” por 15s após última vibração válida
+
+function hasNumericVibration(items: any): boolean {
+  const arr =
+    (items?.vibration?.items as any[]) ??
+    (Array.isArray(items) ? items : []) ??
+    [];
+  return Array.isArray(arr) && arr.some((it: any) => Number.isFinite(Number(it?.overall ?? it?.rms)));
+}
+
+async function fetchJson(url: string) {
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(`${r.status} ${url}`);
+  return r.json();
+}
+
 const SystemStatusPanel: React.FC = () => {
   const { snapshot } = useLive();
   const now = Date.now();
 
-  // Overall: só pelo frescor do pacote "live"
+  // Overall/Actuators/Transmission como antes
   const overall = useMemo<Sev>(() => sevFromTs(snapshot?.ts, now), [snapshot?.ts, now]);
 
-  // Actuators: precisa ter lista e o pacote estar fresco
   const actuatorsSev: Sev = useMemo(() => {
     const hasData = (snapshot?.actuators || []).length > 0;
     if (!hasData) return "down";
     return sevFromTs(snapshot?.ts, now);
   }, [snapshot?.actuators, snapshot?.ts, now]);
 
-  // Sensors: usamos MPUs como proxy (se vier RMS, há ingestão de sensores)
-  const sensorsSev: Sev = useMemo(() => {
-    const hasMPU = (snapshot?.mpu || []).length > 0;
-    if (!hasMPU) return "down";
-    return sevFromTs(snapshot?.ts, now);
-  }, [snapshot?.mpu, snapshot?.ts, now]);
+  const transmissionSev: Sev = useMemo(
+    () => sevFromTs(snapshot?.ts, now),
+    [snapshot?.ts, now]
+  );
 
-  // Transmission: se o pacote chega fresco, o WS está ok
-  const transmissionSev: Sev = useMemo(() => sevFromTs(snapshot?.ts, now), [snapshot?.ts, now]);
+  // 🔹 Latch de vibração observado via WS + fallback HTTP
+  const [lastVibAt, setLastVibAt] = useState<number | null>(null);
+
+  // WS /monitoring para detectar vibração válida
+  useEffect(() => {
+    const ws = openMonitoringWS({
+      onMessage: (m: AnyWSMessage) => {
+        if ((m as any)?.type !== "monitoring") return;
+        const items = (m as any)?.vibration?.items ?? [];
+        if (Array.isArray(items) && items.some((it) => Number.isFinite(Number(it?.overall ?? it?.rms)))) {
+          setLastVibAt(Date.now());
+        }
+      },
+    });
+    return () => ws.close();
+  }, []);
+
+  // Fallback: snapshot de monitoring a cada 4s
+  useEffect(() => {
+    let stop = false;
+    const tick = async () => {
+      try {
+        const data = await fetchJson("/api/monitoring/snapshot");
+        if (hasNumericVibration(data)) setLastVibAt(Date.now());
+      } catch {}
+      if (!stop) setTimeout(tick, 4000);
+    };
+    tick();
+    return () => {
+      stop = true;
+    };
+  }, []);
+
+  // Também considere mpu no snapshot live (se existir)
+  const hasSnapshotMpu = useMemo(() => {
+    const arr = snapshot?.mpu || [];
+    return Array.isArray(arr) && arr.some((m: any) => Number.isFinite(Number(m?.rms ?? m?.overall)));
+  }, [snapshot?.mpu]);
+
+  const sensorsSev: Sev = useMemo(() => {
+    const freshLatch = lastVibAt != null && Date.now() - lastVibAt < LATCH_MS;
+    return hasSnapshotMpu || freshLatch ? "operational" : "down";
+  }, [hasSnapshotMpu, lastVibAt]);
 
   const Row = ({ label, sev }: { label: string; sev: Sev }) => {
     const p = pill(sev);
@@ -109,11 +159,7 @@ const SystemStatusPanel: React.FC = () => {
               {overallPill.label}
             </span>
           </div>
-          {snapshot?.ts && (
-            <div className="text-xs text-zinc-400 mt-1">
-              last: {new Date(snapshot.ts).toLocaleTimeString()}
-            </div>
-          )}
+          {/* “last:” removido conforme pedido */}
         </div>
 
         <div className="space-y-4 pt-2">

@@ -17,7 +17,7 @@ type CatalogItem = {
   id: number;
   code: string;
   name: string;
-  grp: string; // pode vir como `group` no backend; normalizamos
+  grp: string;
   severity?: number;
   [k: string]: any;
 };
@@ -48,7 +48,7 @@ function delay3to5s() {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-// Normaliza itens recebidos do backend (grp vs group, name obrigatório)
+// Normaliza itens recebidos do backend
 function normalizeCatalog(items: any[]): CatalogItem[] {
   if (!Array.isArray(items)) return [];
   return items
@@ -269,7 +269,8 @@ export default function Simulation() {
           open={openDlg}
           onOpenChange={(open) => {
             setOpenDlg(open);
-            if (!open) setPaused3D(true);
+            // ✅ Novo: ao FECHAR o pop-up, retoma a animação
+            if (!open) setPaused3D(false);
           }}
         >
           <DialogContent className="sm:max-w-lg bg-slate-900 text-slate-100 border border-slate-700">
@@ -298,11 +299,10 @@ export default function Simulation() {
                   <Button
                     variant="secondary"
                     onClick={() => {
-                      setPaused3D(true);
+                      // Não precisamos setPaused3D(true) aqui; o onOpenChange cuida de retomar ao fechar
                       setOpenDlg(false);
                       setScenario(null);
-                      setModelKey((k) => k + 1); // RESET
-                      alert("Erro reconhecido (ACK).");
+                      setModelKey((k) => k + 1); // RESET opcional
                     }}
                   >
                     Reconhecer
@@ -311,10 +311,8 @@ export default function Simulation() {
                   {scenario.resume_allowed ? (
                     <Button
                       onClick={() => {
+                        setOpenDlg(false);   // fecha e retoma a animação
                         setScenario(null);
-                        setPaused3D(true);
-                        setOpenDlg(false);
-                        setModelKey((k) => k + 1); // RESET
                       }}
                     >
                       Retomar
@@ -323,10 +321,9 @@ export default function Simulation() {
                     <Button
                       variant="destructive"
                       onClick={() => {
-                        setScenario(null);
-                        setPaused3D(true);
+                        // Fechamos e retomamos (ou, se quiser parar, troque para setPaused3D(true))
                         setOpenDlg(false);
-                        setModelKey((k) => k + 1); // RESET
+                        setScenario(null);
                       }}
                     >
                       Encerrar simulação

@@ -277,28 +277,42 @@ export async function getCyclesTotal(): Promise<CyclesTotalResp> {
    Monitoring (HTTP compat via snapshot)
    ====================== */
 export async function getCyclesRate60s(windowS: number = 60): Promise<CyclesRateResp> {
+  // Preferir endpoint nativo do backend atual
   try {
-    const snap = await fetchJson<any>("/api/slow/snapshot");
-    const items = Array.isArray(snap?.items) ? snap.items : [];
-    const sumCycles = items.reduce((acc: number, it: any) => acc + Number(it.cycles ?? 0), 0);
-    const sumCpm = items.reduce((acc: number, it: any) => acc + Number(it.cpm ?? 0), 0);
-    const win = Number(snap?.window_s ?? windowS);
+    const r = await fetchJson<any>(`/api/slow/cpm?window_s=${windowS}`);
+    const items = (Array.isArray(r?.items) ? r.items : []) as Array<{ actuator_id?: number; id?: number; cpm?: number }>;
+    const sumCpm = items.reduce((acc, it) => acc + Number(it.cpm ?? 0), 0);
     return {
-      window_seconds: win,
-      pairs_count: sumCycles,
-      cycles: sumCycles,
-      cycles_per_second: win > 0 ? sumCpm / 60.0 : 0,
+      window_seconds: Number(r?.window_s ?? windowS),
+      pairs_count: 0,
+      cycles: 0,
+      cycles_per_second: (sumCpm / 60.0),
     };
   } catch {
-    const r = await fetchJson<ActuatorsCpmResp>(`/api/live/actuators/cpm?window_s=${windowS}`);
-    const sumCycles = (r?.actuators ?? []).reduce((acc, a) => acc + (a.cycles || 0), 0);
-    const sumCpm = (r?.actuators ?? []).reduce((acc, a) => acc + (a.cpm || 0), 0);
-    return {
-      window_seconds: windowS,
-      pairs_count: sumCycles,
-      cycles: sumCycles,
-      cycles_per_second: sumCpm / 60.0,
-    };
+    // Fallbacks legados
+    try {
+      const snap = await fetchJson<any>("/api/slow/snapshot");
+      const items = Array.isArray(snap?.items) ? snap.items : [];
+      const sumCycles = items.reduce((acc: number, it: any) => acc + Number(it.cycles ?? 0), 0);
+      const sumCpm = items.reduce((acc: number, it: any) => acc + Number(it.cpm ?? 0), 0);
+      const win = Number(snap?.window_s ?? windowS);
+      return {
+        window_seconds: win,
+        pairs_count: sumCycles,
+        cycles: sumCycles,
+        cycles_per_second: win > 0 ? sumCpm / 60.0 : 0,
+      };
+    } catch {
+      const r = await fetchJson<ActuatorsCpmResp>(`/api/live/actuators/cpm?window_s=${windowS}`);
+      const sumCycles = (r?.actuators ?? []).reduce((acc, a) => acc + (a.cycles || 0), 0);
+      const sumCpm = (r?.actuators ?? []).reduce((acc, a) => acc + (a.cpm || 0), 0);
+      return {
+        window_seconds: windowS,
+        pairs_count: sumCycles,
+        cycles: sumCycles,
+        cycles_per_second: sumCpm / 60.0,
+      };
+    }
   }
 }
 
@@ -578,7 +592,7 @@ async function runtimeFromOpcByMinute(act: "A1" | "A2", since: string): Promise<
           d.getUTCFullYear(),
           d.getUTCMonth(),
           d.getUTCDate(),
-          d.getUTCHours(),
+          d.getUTCFullYear() ? d.getUTCHours() : d.getUTCHours(), // keep ts
           d.getUTCMinutes(),
           59,
           999
@@ -936,9 +950,30 @@ export type WSMessageMonitoring = {
   }[];
   vibration: { window_s: number; items: { mpu_id: number; overall: number }[] };
 };
-export type WSMessageCPM = { type: "cpm"; ts: string; window_s: number; items: { id: number; cpm: number; window_s: number }[] };
+
+// >>> Compat: backend envia items com actuator_id; front legado usa id.
+//     Definimos item flexível e sempre normalizamos.
+export type CPMItem = { actuator_id?: 1 | 2; id?: 1 | 2; cpm: number; window_s?: number };
+
+export type WSMessageCPM = {
+  type: "cpm";
+  ts: string;
+  window_s: number;
+  items: CPMItem[];
+  /** compat opcional: espelha items normalizados como {id,cpm,window_s} */
+  actuators?: { id: number; cpm: number; window_s?: number }[];
+};
+
+// >>> Compat: alguns pontos comparam msg.type === "vibration"
+export type WSMessageVibrationCompat = {
+  type: "vibration";
+  ts: string;
+  window_s: number;
+  items: { mpu_id: number; overall: number }[];
+};
+
 export type WSMessageAlert = { type: "alert"; ts: string; code: string; severity: number; origin?: string; message: string };
-export type WSHeartbeat = { type: "hb"; ts: string; channel?: string };
+export type WSHeartbeat = { type: "hb"; ts?: string; channel?: string };
 export type WSError = { type: "error"; channel?: string; detail: string; ts?: string };
 
 export type WSMessageAlertsSnapshot = {
@@ -960,6 +995,7 @@ export type AnyWSMessage =
   | WSMessageLive
   | WSMessageMonitoring
   | WSMessageCPM
+  | WSMessageVibrationCompat
   | WSMessageAlert
   | WSMessageAlertsSnapshot
   | WSHeartbeat
@@ -1201,8 +1237,32 @@ export function openLiveWS(handlers: WSHandlers): WSHandle {
   });
 }
 
+// >>> Compat aqui: além de repassar "monitoring", emitimos também "vibration"
 export function openMonitoringWS(handlers: WSHandlers): WSHandle {
-  return openWS("/ws/monitoring", handlers, {
+  const wrap: WSHandlers = {
+    ...handlers,
+    onMessage: (m: AnyWSMessage) => {
+      if ((m as any)?.type === "monitoring") {
+        const mon = m as WSMessageMonitoring;
+        const vib: WSMessageVibrationCompat = {
+          type: "vibration",
+          ts: mon.ts,
+          window_s: Number(mon.vibration?.window_s ?? 2),
+          items: (mon.vibration?.items ?? []).map((it) => ({
+            mpu_id: Number(it.mpu_id),
+            overall: Number(it.overall ?? 0),
+          })),
+        };
+        // primeiro a mensagem oficial...
+        handlers.onMessage?.(mon);
+        // ...depois a compat (para código legado que compara msg.type === "vibration")
+        handlers.onMessage?.(vib as AnyWSMessage);
+        return;
+      }
+      handlers.onMessage?.(m);
+    },
+  };
+  return openWS("/ws/monitoring", wrap, {
     manageVisibility: true,
     fallbackSnapshot: null,
     fallbackIntervalMs: 0,
@@ -1210,8 +1270,30 @@ export function openMonitoringWS(handlers: WSHandlers): WSHandle {
   });
 }
 
+// >>> Compat aqui: além de repassar "cpm", acrescentamos msg.actuators normalizado
 export function openSlowWS(handlers: WSHandlers): WSHandle {
-  return openWS("/ws/slow", handlers, {
+  const wrap: WSHandlers = {
+    ...handlers,
+    onMessage: (m: AnyWSMessage) => {
+      if ((m as any)?.type === "cpm") {
+        const msg = m as WSMessageCPM;
+        const rawItems = Array.isArray(msg.items) ? msg.items : [];
+        const normalized = rawItems
+          .map((it) => ({
+            id: Number((it as any).id ?? (it as any).actuator_id),
+            cpm: Number((it as any).cpm ?? 0),
+            window_s: (it as any).window_s != null ? Number((it as any).window_s) : undefined,
+          }))
+          .filter((x) => Number.isFinite(x.id));
+        // expõe compat para código legado
+        (msg as WSMessageCPM).actuators = normalized;
+        handlers.onMessage?.(msg);
+        return;
+      }
+      handlers.onMessage?.(m);
+    },
+  };
+  return openWS("/ws/slow", wrap, {
     manageVisibility: true,
     fallbackSnapshot: null,
     fallbackIntervalMs: 0,
