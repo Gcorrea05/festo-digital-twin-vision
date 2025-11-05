@@ -214,13 +214,42 @@ function extractTimingsFromMessage(
 const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
   const { snapshot } = useLive();
 
-  const systemText = useMemo<"OK" | "DEGRADED" | "OFFLINE" | "—">(() => {
-    const s = String(snapshot?.system?.status ?? "—").toLowerCase();
-    if (s === "ok") return "OK";
-    if (s === "degraded") return "DEGRADED";
-    if (s === "down" || s === "offline") return "OFFLINE";
-    return "—";
-  }, [snapshot?.system?.status]);
+  // ====== NOVO: status do sistema (mesma ideia do projeto antigo)
+  // Regra: qualquer atividade recente -> OK; 4s–12s sem atividade -> DEGRADED; >=12s -> OFFLINE.
+  const lastActivityRef = useRef<number>(Date.now());
+  const [systemStatus, setSystemStatus] = useState<"OK" | "DEGRADED" | "OFFLINE">("OFFLINE");
+
+  // Bootstrap rápido via /api/health (tal como no código antigo)
+  useEffect(() => {
+    let stop = false;
+    (async () => {
+      try {
+        const h = await fetchJson("/api/health");
+        if (stop) return;
+        // se respondeu, consideramos ativo
+        lastActivityRef.current = Date.now();
+        setSystemStatus("OK");
+      } catch {
+        if (stop) return;
+        setSystemStatus("OFFLINE");
+      }
+    })();
+    return () => {
+      stop = true;
+    };
+  }, []);
+
+  // Watchdog de inatividade (idêntico em comportamento ao antigo)
+  useEffect(() => {
+    const id = setInterval(() => {
+      const dt = Date.now() - lastActivityRef.current;
+      if (dt < 4000) setSystemStatus("OK");
+      else if (dt < 12000) setSystemStatus("DEGRADED");
+      else setSystemStatus("OFFLINE");
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+  // ====== FIM status do sistema
 
   const [cpm, setCpm] = useState<number | null>(null);
   const [vibOverall, setVibOverall] = useState<number | null>(null);
@@ -237,6 +266,9 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
   /* ---------- WS /monitoring: timings + vib (principal) ---------- */
   useEffect(() => {
     const handleMonitoring = (msg: WSMessageMonitoring) => {
+      // Qualquer mensagem recebida conta como atividade do sistema
+      lastActivityRef.current = Date.now();
+
       // Log bruto (clonado para ficar legível)
       try {
         const clone = (globalThis as any).structuredClone
@@ -284,9 +316,13 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
 
     return () => wsMon.close();
   }, [selectedId]);
+
   /* ---------- WS /slow: CPM ---------- */
   useEffect(() => {
     const handleCpm = (msg: WSMessageCPM) => {
+      // conta atividade também
+      lastActivityRef.current = Date.now();
+
       const arr = msg.items || msg.actuators || msg.cpm || [];
       const item = (arr as any[]).find((a) => {
         const aid = n(a?.id) ?? n(a?.actuator_id);
@@ -312,6 +348,8 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
     const fetchFallback = async () => {
       try {
         const data = await fetchJson("/api/monitoring/snapshot");
+        lastActivityRef.current = Date.now();
+
         try {
           const clone = (globalThis as any).structuredClone
             ? (structuredClone as any)(data)
@@ -346,13 +384,12 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
               pool.find((a) => (n(a?.actuator_id) ?? n(a?.id)) === mpuId) ?? act;
           }
         }
-        const base = act?.last ?? act?.latest ?? act ?? null;
         const { openMs, closeMs, cycleMs } = extractTimingsFromMessage(
           { timings: [act] },
           mpuId
         ); // reaproveita a mesma função
 
-        console.debug("[HTTP] snapshot parsed:", {
+        console.debug("[HTTP] snapshot parsed]:", {
           selectedId: mpuId,
           openMs,
           closeMs,
@@ -382,6 +419,8 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
     const pollTimings = async () => {
       try {
         const data = await fetchJson("/api/live/actuators/timings");
+        lastActivityRef.current = Date.now();
+
         try {
           const clone = (globalThis as any).structuredClone
             ? (structuredClone as any)(data)
@@ -399,7 +438,6 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
               pool.find((a) => (n(a?.actuator_id) ?? n(a?.id)) === selectedId) ?? act;
           }
         }
-        const base = act?.last ?? act?.latest ?? act ?? null;
         const { openMs, closeMs, cycleMs } = extractTimingsFromMessage(
           { timings: [act] },
           selectedId
@@ -428,6 +466,12 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
     };
   }, [selectedId]);
 
+  // Texto exibido no card “Sistema Ligado”
+  const systemText = useMemo<"OK" | "DEGRADED" | "OFFLINE">(
+    () => systemStatus,
+    [systemStatus]
+  );
+
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
       {[
@@ -435,7 +479,7 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
         { title: "Sistema Ligado", value: systemText },
         {
           title: "Vibração",
-          value: vibOverall != null ? `${(vibOverall-1).toFixed(3)} g` : "—",
+          value: vibOverall != null ? `${(vibOverall - 1).toFixed(3)} g` : "—",
         },
         { title: "Tempo para Abrir", value: fmtMs(tOpenMs) },
         { title: "Tempo para Fechar", value: fmtMs(tCloseMs) },
