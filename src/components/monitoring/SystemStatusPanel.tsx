@@ -1,9 +1,13 @@
 // src/components/monitoring/SystemStatusPanel.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLive } from "@/context/LiveContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CheckCircle2, XCircle, HelpCircle } from "lucide-react";
-import { openMonitoringWS, type AnyWSMessage } from "@/lib/api";
+import {
+  openMonitoringWS,
+  openLiveWS,
+  type AnyWSMessage,
+} from "@/lib/api";
 
 type Sev = "operational" | "down" | "unknown";
 
@@ -33,28 +37,21 @@ function pill(sev: Sev) {
   }
 }
 
-/* ================= Freshness model ================= */
-const OK_MS = 2000;
-const DEG_MS = 10000;
-function sevFromTs(ts?: string | null, nowMs = Date.now()): Sev {
-  if (!ts) return "unknown";
-  const t = Date.parse(ts);
-  if (!Number.isFinite(t)) return "unknown";
-  const age = nowMs - t;
-  if (age <= OK_MS) return "operational";
-  if (age <= DEG_MS) return "unknown";
-  return "down";
-}
+/* ================= Janela/tempo ================= */
+const TX_TIMEOUT_MS = 3_000;         // transmission: janela p/ considerar Online
+const ACT_CHANGE_WINDOW_MS = 60_000; // actuators: precisa ter HAVIDO troca de estado nessa janela
+const LATCH_MS = 15_000;             // sensors: mantém Online por 15s após última vibração válida
 
-/* ================= Sensors latch via vibration ================= */
-const LATCH_MS = 15000; // mantém “Online” por 15s após última vibração válida
-
+/* ================= Util ================= */
 function hasNumericVibration(items: any): boolean {
   const arr =
     (items?.vibration?.items as any[]) ??
     (Array.isArray(items) ? items : []) ??
     [];
-  return Array.isArray(arr) && arr.some((it: any) => Number.isFinite(Number(it?.overall ?? it?.rms)));
+  return (
+    Array.isArray(arr) &&
+    arr.some((it: any) => Number.isFinite(Number(it?.overall ?? it?.rms)))
+  );
 }
 
 async function fetchJson(url: string) {
@@ -65,47 +62,98 @@ async function fetchJson(url: string) {
 
 const SystemStatusPanel: React.FC = () => {
   const { snapshot } = useLive();
-  const now = Date.now();
 
-  // Overall/Actuators/Transmission como antes
-  const overall = useMemo<Sev>(() => sevFromTs(snapshot?.ts, now), [snapshot?.ts, now]);
-
-  const actuatorsSev: Sev = useMemo(() => {
-    const hasData = (snapshot?.actuators || []).length > 0;
-    if (!hasData) return "down";
-    return sevFromTs(snapshot?.ts, now);
-  }, [snapshot?.actuators, snapshot?.ts, now]);
-
-  const transmissionSev: Sev = useMemo(
-    () => sevFromTs(snapshot?.ts, now),
-    [snapshot?.ts, now]
-  );
-
-  // 🔹 Latch de vibração observado via WS + fallback HTTP
+  // ===== timestamps =====
+  const [now, setNow] = useState<number>(() => Date.now());
+  const lastTransmissionAt = useRef<number>(0);
+  const lastActuatorChangeAt = useRef<number>(0);
   const [lastVibAt, setLastVibAt] = useState<number | null>(null);
 
-  // WS /monitoring para detectar vibração válida
+  // memória dos últimos estados para detectar TROCA
+  const prevA1 = useRef<"RECUADO" | "AVANÇADO" | "DESCONHECIDO" | null>(null);
+  const prevA2 = useRef<"RECUADO" | "AVANÇADO" | "DESCONHECIDO" | null>(null);
+
+  // clock para reavaliar flags
   useEffect(() => {
-    const ws = openMonitoringWS({
+    const t = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(t);
+  }, []);
+
+  // ===== WS: qualquer mensagem válida conta como TRANSMISSION =====
+  useEffect(() => {
+    const l = openLiveWS({
+      onOpen: () => (lastTransmissionAt.current = Date.now()),
       onMessage: (m: AnyWSMessage) => {
-        if ((m as any)?.type !== "monitoring") return;
-        const items = (m as any)?.vibration?.items ?? [];
-        if (Array.isArray(items) && items.some((it) => Number.isFinite(Number(it?.overall ?? it?.rms)))) {
-          setLastVibAt(Date.now());
+        lastTransmissionAt.current = Date.now();
+
+        // detectar troca de estado dos atuadores (apenas quando vier pacote "live" com estados)
+        if ((m as any)?.type === "live") {
+          const arr: any[] = Array.isArray((m as any)?.actuators)
+            ? (m as any).actuators
+            : [];
+          let changed = false;
+          for (const it of arr) {
+            const id = Number((it as any)?.id);
+            const st = String((it as any)?.state ?? "").toUpperCase() as
+              | "RECUADO"
+              | "AVANÇADO"
+              | "DESCONHECIDO";
+            if (id === 1) {
+              if (prevA1.current != null && st && st !== prevA1.current)
+                changed = true;
+              prevA1.current = st || prevA1.current;
+            } else if (id === 2) {
+              if (prevA2.current != null && st && st !== prevA2.current)
+                changed = true;
+              prevA2.current = st || prevA2.current;
+            }
+          }
+          if (changed) lastActuatorChangeAt.current = Date.now();
         }
       },
     });
-    return () => ws.close();
+
+    const m = openMonitoringWS({
+      onOpen: () => (lastTransmissionAt.current = Date.now()),
+      onMessage: (msg: AnyWSMessage) => {
+        lastTransmissionAt.current = Date.now();
+        // vibração válida aciona latch de sensores
+        if ((msg as any)?.type === "monitoring") {
+          const items = (msg as any)?.vibration?.items ?? [];
+          if (
+            Array.isArray(items) &&
+            items.some((it) =>
+              Number.isFinite(Number(it?.overall ?? it?.rms))
+            )
+          ) {
+            setLastVibAt(Date.now());
+          }
+        }
+      },
+    });
+
+    return () => {
+      try {
+        l.close?.();
+      } catch {}
+      try {
+        m.close?.();
+      } catch {}
+    };
   }, []);
 
-  // Fallback: snapshot de monitoring a cada 4s
+  // ===== fallback HTTP para sensores (snapshot monitoring) =====
   useEffect(() => {
     let stop = false;
     const tick = async () => {
       try {
         const data = await fetchJson("/api/monitoring/snapshot");
         if (hasNumericVibration(data)) setLastVibAt(Date.now());
-      } catch {}
+        // qualquer resposta válida também conta como transmissão
+        lastTransmissionAt.current = Date.now();
+      } catch {
+        /* ignore */
+      }
       if (!stop) setTimeout(tick, 4000);
     };
     tick();
@@ -114,17 +162,41 @@ const SystemStatusPanel: React.FC = () => {
     };
   }, []);
 
-  // Também considere mpu no snapshot live (se existir)
+  // ===== cálculo das 3 tags =====
+  const transmissionSev: Sev =
+    now - lastTransmissionAt.current <= TX_TIMEOUT_MS
+      ? "operational"
+      : "down";
+
+  // sensores: snapshot live pode ter mpu (rms/overall)
   const hasSnapshotMpu = useMemo(() => {
-    const arr = snapshot?.mpu || [];
-    return Array.isArray(arr) && arr.some((m: any) => Number.isFinite(Number(m?.rms ?? m?.overall)));
-  }, [snapshot?.mpu]);
+    const arr = (snapshot as any)?.mpu || [];
+    return (
+      Array.isArray(arr) &&
+      arr.some((m: any) => Number.isFinite(Number(m?.rms ?? m?.overall)))
+    );
+  }, [snapshot]);
 
-  const sensorsSev: Sev = useMemo(() => {
-    const freshLatch = lastVibAt != null && Date.now() - lastVibAt < LATCH_MS;
-    return hasSnapshotMpu || freshLatch ? "operational" : "down";
-  }, [hasSnapshotMpu, lastVibAt]);
+  const sensorsSev: Sev =
+    (lastVibAt != null && now - lastVibAt < LATCH_MS) || hasSnapshotMpu
+      ? "operational"
+      : "down";
 
+  // actuators: precisa ter havido TROCA de estado na janela
+  const actuatorsSev: Sev =
+    now - lastActuatorChangeAt.current <= ACT_CHANGE_WINDOW_MS
+      ? "operational"
+      : "down";
+
+  // overall = todos “operational”
+  const overall: Sev =
+    transmissionSev === "operational" &&
+    sensorsSev === "operational" &&
+    actuatorsSev === "operational"
+      ? "operational"
+      : "down";
+
+  /* ================= Render ================= */
   const Row = ({ label, sev }: { label: string; sev: Sev }) => {
     const p = pill(sev);
     return (
@@ -159,7 +231,6 @@ const SystemStatusPanel: React.FC = () => {
               {overallPill.label}
             </span>
           </div>
-          {/* “last:” removido conforme pedido */}
         </div>
 
         <div className="space-y-4 pt-2">

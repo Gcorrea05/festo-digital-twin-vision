@@ -82,6 +82,9 @@ export default function Simulation() {
   // RESET do 3D via remount controlado por key
   const [modelKey, setModelKey] = useState(0);
 
+  // ref do container para esconder o botão "Live" localmente
+  const modelWrapRef = useRef<HTMLDivElement>(null);
+
   // evita setState após unmount
   const alive = useRef(true);
   useEffect(() => {
@@ -142,8 +145,8 @@ export default function Simulation() {
     try {
       const req = postJson<Scenario>("/api/simulation/draw", { mode: "by_code", code: selectedCode });
       const wait = delay3to5s();
-      const j = await req;       // aguarda backend
-      await wait;                // garante o atraso
+      const j = await req; // aguarda backend
+      await wait; // garante o atraso
 
       if (!alive.current) return;
 
@@ -162,6 +165,39 @@ export default function Simulation() {
       if (alive.current) setLoading(false);
     }
   }
+
+  // ====== HIDE do botão "Live" e do possível separador "•" APENAS nesta página ======
+  useEffect(() => {
+    const root = modelWrapRef.current;
+    if (!root) return;
+
+    const hideLive = () => {
+      const btns = root.querySelectorAll<HTMLElement>('button, [role="button"]');
+      btns.forEach((el) => {
+        const text = (el.innerText || el.textContent || "").trim().toLowerCase();
+        if (text === "live" || text.endsWith(" live") || text.startsWith("live ")) {
+          el.style.display = "none";
+        }
+      });
+      const spans = root.querySelectorAll<HTMLElement>("span");
+      spans.forEach((el) => {
+        if (el.textContent?.trim() === "•") {
+          const next = el.nextElementSibling as HTMLElement | null;
+          if (next) {
+            const t = (next.innerText || next.textContent || "").trim().toLowerCase();
+            if (t === "live" || t.endsWith(" live") || t.startsWith("live ")) {
+              el.style.display = "none";
+            }
+          }
+        }
+      });
+    };
+
+    hideLive();
+    const obs = new MutationObserver(hideLive);
+    obs.observe(root, { childList: true, subtree: true, characterData: true });
+    return () => obs.disconnect();
+  }, [modelKey]);
 
   const sev = scenario?.error?.severity;
   const sevBadge =
@@ -189,9 +225,12 @@ export default function Simulation() {
             <CardTitle>Modelo</CardTitle>
           </CardHeader>
 
-          <CardContent className="space-y-4">
+        <CardContent className="space-y-4">
             {/* RESET controlado pela key */}
-            <div className="rounded-2xl border border-slate-800 bg-slate-950 p-4">
+            <div
+              ref={modelWrapRef}
+              className="rounded-2xl border border-slate-800 bg-slate-950 p-4"
+            >
               <ThreeDModel key={modelKey} paused={paused3D} />
             </div>
 
@@ -269,8 +308,7 @@ export default function Simulation() {
           open={openDlg}
           onOpenChange={(open) => {
             setOpenDlg(open);
-            // ✅ Novo: ao FECHAR o pop-up, retoma a animação
-            if (!open) setPaused3D(false);
+            if (!open) setPaused3D(false); // ao fechar, retoma animação
           }}
         >
           <DialogContent className="sm:max-w-lg bg-slate-900 text-slate-100 border border-slate-700">
@@ -299,7 +337,6 @@ export default function Simulation() {
                   <Button
                     variant="secondary"
                     onClick={() => {
-                      // Não precisamos setPaused3D(true) aqui; o onOpenChange cuida de retomar ao fechar
                       setOpenDlg(false);
                       setScenario(null);
                       setModelKey((k) => k + 1); // RESET opcional
@@ -311,7 +348,7 @@ export default function Simulation() {
                   {scenario.resume_allowed ? (
                     <Button
                       onClick={() => {
-                        setOpenDlg(false);   // fecha e retoma a animação
+                        setOpenDlg(false);
                         setScenario(null);
                       }}
                     >
@@ -321,9 +358,10 @@ export default function Simulation() {
                     <Button
                       variant="destructive"
                       onClick={() => {
-                        // Fechamos e retomamos (ou, se quiser parar, troque para setPaused3D(true))
+                        // ✅ apenas o pedido: voltar o 3D ao início
                         setOpenDlg(false);
                         setScenario(null);
+                        setModelKey((k) => k + 1); // <<< RESETA O 3D
                       }}
                     >
                       Encerrar simulação

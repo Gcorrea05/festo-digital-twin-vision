@@ -28,7 +28,7 @@ function toArray<T = any>(x: any): T[] {
   return [];
 }
 
-// ---- helpers de tempo (tolerantes a undefined) ----
+// ---- helpers de tempo ----
 const ensureIsoUtc = (s?: string): string => {
   if (!s) return "";
   const hasTZ = /[zZ]|[+\-]\d{2}:\d{2}$/.test(s);
@@ -55,23 +55,19 @@ const fmtHHMM = (val: unknown): string => {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 };
 
-const minusG = (v: number | null | undefined) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n - 1 : 0;
-};
-
 /* ========================= Paleta ========================= */
-const C = {
-  A1: "#7C3AED",
-  A2: "#06B6D4",
-};
+const C = { A1: "#7C3AED", A2: "#06B6D4" };
+
+/* ========================= Constantes ========================= */
+const WINDOW_MINUTES = 10; // <- janela fixa
+const WINDOW_SINCE = "-10m";
+const MAX_MIN = WINDOW_MINUTES + 1;
+
+const withinWindow = (minuteIso: string) =>
+  Date.parse(minuteIso) >= Date.now() - WINDOW_MINUTES * 60_000;
 
 /* ========================= Tipos locais ========================= */
-type MinuteAgg = {
-  minute: string;
-  runtime_s: number;
-  vib_avg?: number | null;
-};
+type MinuteAgg = { minute: string; runtime_s: number; vib_avg?: number | null };
 
 type MpuRowLike = {
   ts?: string;
@@ -82,102 +78,60 @@ type MpuRowLike = {
   ax_g?: number;
   ay_g?: number;
   az_g?: number;
-  gx?: number;
-  gy?: number;
-  gz?: number;
-  gx_dps?: number;
-  gy_dps?: number;
-  gz_dps?: number;
 };
-type MpuPoint = {
-  ts: string;
-  ax: number;
-  ay: number;
-  az: number;
-  gx: number;
-  gy: number;
-  gz: number;
-};
+type MpuPoint = { ts: string; ax: number; ay: number; az: number };
 
-/* ========================= Constantes ========================= */
-const VIB_POLL_MS = 60_000;
-const MAX_MIN = 120;
-
-// Conversão RAW->g (±2g default)
+/* ===== Conversão RAW->g ===== */
 const RAW_TO_G = 1 / 16384;
 const pickG = (g?: number, raw?: number) =>
   Number.isFinite(g) ? Number(g) : Number.isFinite(raw) ? Number(raw) * RAW_TO_G : 0;
 
-/* ===== HPF + RMS ===== */
-type HPFState = {
-  axPrev: number; ayPrev: number; azPrev: number;
-  xPrev: number;  yPrev: number;  zPrev: number;
-};
-const makeHPF = (alpha: number) => {
-  const st: HPFState = { axPrev: 0, ayPrev: 0, azPrev: 0, xPrev: 0, yPrev: 0, zPrev: 0 };
-  return (ax: number, ay: number, az: number) => {
-    const fx = alpha * (st.axPrev + ax - st.xPrev);
-    const fy = alpha * (st.ayPrev + ay - st.yPrev);
-    const fz = alpha * (st.azPrev + az - st.zPrev);
-    st.axPrev = fx; st.ayPrev = fy; st.azPrev = fz;
-    st.xPrev = ax; st.yPrev = ay; st.zPrev = az;
-    return { fx, fy, fz };
-  };
-};
-
-const rmsByMinute = (
-  points: { ts: string; ax: number; ay: number; az: number }[],
-  alpha = 0.96
-) => {
-  const hpf = makeHPF(alpha);
-  const byMin = new Map<string, { sumSq: number; n: number }>();
+/* ===== Média de vibração por minuto (fallback cliente) =====
+   vib = max(0, sqrt(ax^2+ay^2+az^2) - 1) */
+function avgVibrationByMinute(points: { ts: string; ax: number; ay: number; az: number }[]) {
+  const byMin = new Map<string, { sum: number; n: number }>();
   for (const p of points) {
-    const { fx, fy, fz } = hpf(p.ax, p.ay, p.az);
     const m = toMinuteIsoUTC(p.ts);
-    const acc = byMin.get(m) ?? { sumSq: 0, n: 0 };
-    acc.sumSq += fx * fx + fy * fy + fz * fz;
+    const mag = Math.sqrt(p.ax * p.ax + p.ay * p.ay + p.az * p.az);
+    const vib = Math.max(0, mag - 1);
+    const acc = byMin.get(m) ?? { sum: 0, n: 0 };
+    acc.sum += vib;
     acc.n += 1;
     byMin.set(m, acc);
   }
   const out: { minute: string; vib: number }[] = [];
-  for (const [m, v] of byMin) {
-    const meanSq = v.n ? v.sumSq / v.n : 0;
-    out.push({ minute: m, vib: Math.sqrt(meanSq) });
+  for (const [minute, v] of byMin) {
+    if (!withinWindow(minute)) continue; // corta fora da janela
+    out.push({ minute, vib: v.n ? v.sum / v.n : 0 });
   }
-  return out.sort((a, b) => a.minute.localeCompare(b.minute));
-};
+  return out.sort((a, b) => a.minute.localeCompare(b.minute)).slice(-MAX_MIN);
+}
 
 /* ===== Unidade dinâmica ===== */
 type Unit = "g" | "mg" | "µg";
-const pickUnit = (maxG: number): Unit => {
-  if (!isFinite(maxG) || maxG <= 0) return "g";
-  if (maxG >= 0.1) return "g";
-  if (maxG >= 0.001) return "mg";
-  return "µg";
-};
-const scaleByUnit = (v: number, unit: Unit) => (unit === "g" ? v : unit === "mg" ? v * 1_000 : v * 1_000_000);
+const pickUnit = (maxG: number): Unit =>
+  !isFinite(maxG) || maxG <= 0 ? "g" : maxG >= 0.1 ? "g" : maxG >= 0.001 ? "mg" : "µg";
+const scaleByUnit = (v: number, u: Unit) => (u === "g" ? v : u === "mg" ? v * 1_000 : v * 1_000_000);
 const unitSuffix = (u: Unit) => (u === "g" ? "g" : u === "mg" ? "mg" : "µg");
 
 /* ========================= Página ========================= */
 const Analytics: React.FC = () => {
-  // ===== Atuador selecionado (A1/A2) =====
   const { selectedId: act, setSelectedId } = useActuatorSelection();
 
-  // ===== Aba de gráfico =====
   type VibraOpt = "vib_runtime" | "vib_compare";
   const [optVib, setOptVib] = useState<VibraOpt>("vib_runtime");
 
-  // ===== IDs de MPU =====
+  // IDs de MPU
   const { ids } = useMpuIds();
   const idsArray = useMemo<(string | number)[]>(() => toArray(ids), [ids]);
   const mpuA1 = idsArray[0] != null ? String(idsArray[0]) : null;
   const mpuA2 = idsArray[1] != null ? String(idsArray[1]) : null;
   const mpuId = useMemo(() => (act === 1 ? mpuA1 : mpuA2), [act, mpuA1, mpuA2]);
 
-  // ===== Vibração bruta (para fallback/comparativo) =====
-  const { rows: rowsAct } = useMpuHistory(mpuId, "-10m", 2000, true);
-  const { rows: rowsA1 } = useMpuHistory(mpuA1, "-10m", 2000, true);
-  const { rows: rowsA2 } = useMpuHistory(mpuA2, "-10m", 2000, true);
+  // Histórico bruto (já pedimos –10m no hook)
+  const { rows: rowsAct } = useMpuHistory(mpuId, WINDOW_SINCE, 2000, true);
+  const { rows: rowsA1 } = useMpuHistory(mpuA1, WINDOW_SINCE, 2000, true);
+  const { rows: rowsA2 } = useMpuHistory(mpuA2, WINDOW_SINCE, 2000, true);
 
   const parseMpu = (src: unknown[]): MpuPoint[] => {
     const a = Array.isArray(src) ? src : [];
@@ -188,42 +142,60 @@ const Analytics: React.FC = () => {
         ax: pickG(o.ax_g, o.ax),
         ay: pickG(o.ay_g, o.ay),
         az: pickG(o.az_g, o.az),
-        gx: 0, gy: 0, gz: 0,
       };
     });
   };
 
-  // série principal (atuador selecionado)
+  // Série do atuador selecionado
   const actMpuRef = useRef<MpuPoint[]>([]);
   const [mpuChartData, setMpuChartData] = useState<MpuPoint[]>([]);
   useEffect(() => {
     const normalized = parseMpu(rowsAct as any);
     const byTs = new Map<string, MpuPoint>();
     for (const p of [...actMpuRef.current, ...normalized]) byTs.set(p.ts, p);
-    const merged = Array.from(byTs.values()).sort((a, b) => a.ts.localeCompare(b.ts)).slice(-2000);
+    const merged = Array.from(byTs.values())
+      .sort((a, b) => a.ts.localeCompare(b.ts))
+      .filter((p) => withinWindow(toMinuteIsoUTC(p.ts)))
+      .slice(-2000);
     actMpuRef.current = merged;
     setMpuChartData(merged);
   }, [rowsAct]);
 
-  // séries para comparação (A1×A2)
+  // Séries para comparação
   const [mpuA1Data, setMpuA1Data] = useState<MpuPoint[]>([]);
   const [mpuA2Data, setMpuA2Data] = useState<MpuPoint[]>([]);
-  useEffect(() => setMpuA1Data(parseMpu(rowsA1 as any)), [rowsA1]);
-  useEffect(() => setMpuA2Data(parseMpu(rowsA2 as any)), [rowsA2]);
+  useEffect(
+    () => setMpuA1Data(parseMpu(rowsA1 as any).filter((p) => withinWindow(toMinuteIsoUTC(p.ts)))),
+    [rowsA1]
+  );
+  useEffect(
+    () => setMpuA2Data(parseMpu(rowsA2 as any).filter((p) => withinWindow(toMinuteIsoUTC(p.ts)))),
+    [rowsA2]
+  );
 
-  // ===== Aggregates por minuto (API + WS minute-agg) =====
+  // ===== Aggregates por minuto (API + WS) =====
   const [aggAct, setAggAct] = useState<MinuteAgg[]>([]);
 
-  // carga inicial + poll de segurança
   const loadAgg = useCallback(async () => {
     try {
       const actLabel = act === 1 ? "A1" : "A2";
-      const data = await getMinuteAgg(actLabel as "A1" | "A2", "-2h").catch(() => [] as MinuteAgg[]);
+      const data = await getMinuteAgg(actLabel as "A1" | "A2", WINDOW_SINCE).catch(
+        () => [] as MinuteAgg[]
+      );
       const rows = Array.isArray(data) ? data : [];
-      // normaliza/limita
       const map = new Map<string, MinuteAgg>();
-      for (const r of rows) map.set(String(r.minute), { minute: String(r.minute), runtime_s: Number(r.runtime_s ?? 0), vib_avg: r.vib_avg as any });
-      const ordered = Array.from(map.values()).sort((a, b) => a.minute.localeCompare(b.minute)).slice(-MAX_MIN);
+      for (const r of rows) {
+        const minute = toMinuteIsoUTC(r.minute);
+        if (!withinWindow(minute)) continue;
+        map.set(minute, {
+          minute,
+          runtime_s: Number(r.runtime_s ?? 0),
+          vib_avg: r.vib_avg as any,
+        });
+      }
+      const ordered = Array.from(map.values())
+        .sort((a, b) => a.minute.localeCompare(b.minute))
+        .slice(-MAX_MIN);
       setAggAct(ordered);
     } catch {
       setAggAct([]);
@@ -232,67 +204,64 @@ const Analytics: React.FC = () => {
 
   useEffect(() => {
     loadAgg();
-    const id = setInterval(loadAgg, VIB_POLL_MS);
+    const id = setInterval(loadAgg, 60_000);
     return () => clearInterval(id);
   }, [loadAgg]);
 
-  // inscrição no /ws/slow para "minute-agg"
+  // WS minute-agg (filtra na janela)
   useEffect(() => {
-    const dispose = openSlowWS({
+    const ws = openSlowWS({
       onMessage: (m) => {
         if (m?.type !== "minute-agg") return;
         const msg = m as WSMessageMinuteAgg;
         const tag = act === 1 ? "A1" : "A2";
         const hit = msg.items.find((it) => it.actuator === tag);
         if (!hit) return;
-        const row = hit.row;
+        const minute = toMinuteIsoUTC(hit.row.minute);
+        if (!withinWindow(minute)) return;
         setAggAct((prev) => {
           const map = new Map(prev.map((r) => [r.minute, r]));
-          map.set(row.minute, {
-            minute: row.minute,
-            runtime_s: Number(row.runtime_s ?? 0),
-            vib_avg: row.vib_avg,
+          map.set(minute, {
+            minute,
+            runtime_s: Number(hit.row.runtime_s ?? 0),
+            vib_avg: hit.row.vib_avg,
           });
-          const ordered = Array.from(map.values()).sort((a, b) => a.minute.localeCompare(b.minute)).slice(-MAX_MIN);
+          const ordered = Array.from(map.values())
+            .filter((r) => withinWindow(r.minute))
+            .sort((a, b) => a.minute.localeCompare(b.minute))
+            .slice(-MAX_MIN);
           return ordered;
         });
       },
     });
-    return () => { try { dispose?.(); } catch {} };
+    return () => {
+      // PATCH: openSlowWS retorna WSHandle; precisa fechar com .close()
+      try {
+        ws?.close(1000, "analytics-unmount");
+      } catch {}
+    };
   }, [act]);
 
-  // ===== Fallback vibração = RMS/min a partir do bruto (HPF remove gravidade) =====
+  // ===== Fallback vibração cliente =====
   const vibClientFallback = useMemo(() => {
-    const src = mpuChartData;
-    if (!src?.length) return [];
-    return rmsByMinute(src);
+    if (!mpuChartData?.length) return [];
+    return avgVibrationByMinute(mpuChartData);
   }, [mpuChartData]);
 
-  // ===== Dados finais para Vibração/Runtime =====
+  // ===== Dados finais Vibração/Runtime =====
   const vibRtPoints = useMemo(() => {
     const apiPoints = (aggAct ?? [])
-      .filter((r) => typeof r.runtime_s === "number")
+      .filter((r) => typeof r.runtime_s === "number" && r.vib_avg != null)
       .map((r) => ({
         minute: r.minute,
         runtime: r.runtime_s ?? 0,
-        vib: minusG(r.vib_avg),
+        vib: Number(r.vib_avg ?? 0),
       }));
     if (apiPoints.length) return apiPoints;
-    return vibClientFallback;
+    return vibClientFallback.map((r) => ({ minute: r.minute, runtime: 0, vib: r.vib }));
   }, [aggAct, vibClientFallback]);
 
-  // ===== Unidade e dados escalados =====
-  type Unit = "g" | "mg" | "µg";
-  const pickUnit = (maxG: number): Unit => {
-    if (!isFinite(maxG) || maxG <= 0) return "g";
-    if (maxG >= 0.1) return "g";
-    if (maxG >= 0.001) return "mg";
-    return "µg";
-  };
-  const scaleByUnit = (v: number, unit: Unit) => (unit === "g" ? v : unit === "mg" ? v * 1_000 : v * 1_000_000);
-  const unitSuffix = (u: Unit) => (u === "g" ? "g" : u === "mg" ? "mg" : "µg");
-
-  const vibRtUnit = useMemo<Unit>(() => {
+  const vibRtUnit: Unit = useMemo(() => {
     const maxV = Math.max(0, ...vibRtPoints.map((p) => Number(p.vib ?? 0)));
     return pickUnit(maxV);
   }, [vibRtPoints]);
@@ -305,36 +274,21 @@ const Analytics: React.FC = () => {
     }));
   }, [vibRtPoints, vibRtUnit]);
 
-  // ===== Comparativo A1×A2 (RMS/min) =====
+  // ===== Comparativo A1×A2 =====
   const comparePerMinute = useMemo(() => {
-    const a1 = rmsByMinute(mpuA1Data);
-    const a2 = rmsByMinute(mpuA2Data);
+    const a1 = avgVibrationByMinute(mpuA1Data);
+    const a2 = avgVibrationByMinute(mpuA2Data);
     if (!a1.length && !a2.length) return [];
-
     const mapA1 = new Map(a1.map((r) => [r.minute, r.vib]));
     const mapA2 = new Map(a2.map((r) => [r.minute, r.vib]));
-
-    const allKeys = [...new Set([...mapA1.keys(), ...mapA2.keys()])].sort();
-    if (allKeys.length === 0) return [];
-
-    const first = allKeys[0]!;
-    const last  = allKeys[allKeys.length - 1]!;
-
-    const startMs = Date.parse(first);
-    const endMs   = Date.parse(last);
-    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return [];
-
-    const STEP = 60_000;
-    const rows: { minute: string; vibA1: number | null; vibA2: number | null }[] = [];
-    for (let t = startMs; t <= endMs; t += STEP) {
-      const minuteIso = new Date(t).toISOString();
-      rows.push({
-        minute: minuteIso,
-        vibA1: mapA1.has(minuteIso) ? mapA1.get(minuteIso)! : null,
-        vibA2: mapA2.has(minuteIso) ? mapA2.get(minuteIso)! : null,
-      });
-    }
-    return rows;
+    const allKeys = [...new Set<string>>([...mapA1.keys(), ...mapA2.keys()])]
+      .filter(withinWindow)
+      .sort();
+    return allKeys.map((minute) => ({
+      minute,
+      vibA1: mapA1.get(minute) ?? null,
+      vibA2: mapA2.get(minute) ?? null,
+    }));
   }, [mpuA1Data, mpuA2Data]);
 
   const cmpUnit: Unit = useMemo(() => {
@@ -358,16 +312,17 @@ const Analytics: React.FC = () => {
   /* ========================= UI ========================= */
   return (
     <div className="max-w-[1400px] mx-auto px-4 sm:px-6">
-      <Card>
+      <Card className="overflow-hidden">
         <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle className="text-xl md:text-2xl">Análise de Desempenho</CardTitle>
-
-          {/* Toggle de atuador */}
+          <CardTitle className="text-3xl md:text-4xl font-extrabold tracking-tight">
+            Análise de Desempenho
+          </CardTitle>
           <div className="inline-flex rounded-2xl bg-muted/40 p-1 border border-border/60">
             <button
               className={[
                 "px-4 py-2 text-sm font-medium rounded-xl transition focus:outline-none",
-                act === 1 ? "bg-sky-600 text-white" : "bg-transparent text-foreground/80 hover:text-foreground",
+                "bg-transparent",
+                act === 1 ? "bg-sky-600 text-white" : "text-foreground/80 hover:text-foreground",
               ].join(" ")}
               onClick={() => setSelectedId(1)}
             >
@@ -376,7 +331,8 @@ const Analytics: React.FC = () => {
             <button
               className={[
                 "px-4 py-2 text-sm font-medium rounded-xl transition focus:outline-none",
-                act === 2 ? "bg-sky-600 text-white" : "bg-transparent text-foreground/80 hover:text-foreground",
+                "bg-transparent",
+                act === 2 ? "bg-sky-600 text-white" : "text-foreground/80 hover:text-foreground",
               ].join(" ")}
               onClick={() => setSelectedId(2)}
             >
@@ -385,26 +341,22 @@ const Analytics: React.FC = () => {
           </div>
         </CardHeader>
 
-        <CardContent>
-          <Tabs defaultValue="vibracao">
-            <TabsList
-              className={[
-                "flex justify-center overflow-x-auto gap-2 no-scrollbar",
-                "sm:grid sm:grid-cols-3 sm:place-items-center",
-                "rounded-md p-1 bg-muted/20 w-full",
-              ].join(" ")}
-            >
-              <div className="min-w-[8rem] sm:w-full rounded-md px-3 py-2 opacity-0 text-center select-none hidden sm:block" />
-              <TabsTrigger value="vibracao" className="min-w-[8rem] sm:w-full rounded-md px-3 py-2 whitespace-nowrap">
+        <CardContent className="overflow-hidden">
+          <Tabs defaultValue="vibracao" className="w-full">
+            <TabsList className="flex justify-center gap-2 rounded-md p-1 bg-muted/20 w-full">
+              <TabsTrigger value="vibracao" className="min-w-[8rem] rounded-md px-3 py-2 whitespace-nowrap">
                 Vibração
               </TabsTrigger>
-              <div className="min-w-[8rem] sm:w-full rounded-md px-3 py-2 opacity-0 text-center select-none hidden sm:block" />
             </TabsList>
 
             <TabsContent value="vibracao" className="pt-4">
               <div className="flex items-center gap-3 mb-3">
                 <span className="text-sm">Gráfico:</span>
-                <select className="border rounded-md px-2 py-1 bg-background" value={optVib} onChange={(e) => setOptVib(e.target.value as typeof optVib)}>
+                <select
+                  className="border rounded-md px-2 py-1 bg-background"
+                  value={optVib}
+                  onChange={(e) => setOptVib(e.target.value as typeof optVib)}
+                >
                   <option value="vib_runtime">Vibração/Runtime (A{act})</option>
                   <option value="vib_compare">Comparativo A1 × A2</option>
                 </select>
@@ -430,20 +382,31 @@ const Analytics: React.FC = () => {
                           <Tooltip
                             content={<ChartTooltipContent />}
                             labelFormatter={(val: unknown) => fmtHHMM(val)}
-                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
                             formatter={(val: any, name: any): [string, string] => {
                               const n = Number(val);
                               if (name === "vib_disp")
-                                return [Number.isFinite(n) ? n.toFixed(3) : "—", `Vibração (${unitSuffix(vibRtUnit)})`];
+                                return [
+                                  Number.isFinite(n) ? n.toFixed(3) : "—",
+                                  `Vibração (${unitSuffix(vibRtUnit)})`,
+                                ];
                               return [String(val), String(name)];
                             }}
                           />
                           <Legend />
-                          <Line type="monotone" dataKey="vib_disp" name={`Vibração A${act}`} stroke={act === 1 ? C.A1 : C.A2} dot={false} strokeWidth={2} />
+                          <Line
+                            type="monotone"
+                            dataKey="vib_disp"
+                            name={`Vibração A${act}`}
+                            stroke={act === 1 ? C.A1 : C.A2}
+                            dot
+                            strokeWidth={2}
+                          />
                         </LineChart>
                       </ResponsiveContainer>
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center text-sm opacity-70">Sem pontos para exibir nesta janela.</div>
+                      <div className="w-full h-full flex items-center justify-center text-sm opacity-70">
+                        Sem pontos para exibir nesta janela.
+                      </div>
                     )
                   ) : (
                     <ResponsiveContainer width="100%" height="100%">
@@ -453,7 +416,7 @@ const Analytics: React.FC = () => {
                         <YAxis
                           domain={[0, "auto"]}
                           label={{
-                            value: `Vibração RMS (avg/min) [${unitSuffix(cmpUnit)}]`,
+                            value: `Vibração (média/min) [${unitSuffix(cmpUnit)}]`,
                             angle: -90,
                             position: "insideLeft",
                           }}
@@ -461,21 +424,41 @@ const Analytics: React.FC = () => {
                         <Tooltip
                           content={<ChartTooltipContent />}
                           labelFormatter={(val: unknown) => fmtHHMM(val)}
-                          // eslint-disable-next-line @typescript-eslint/no-explicit-any
                           formatter={(val: any, name: any): [string, string] => {
                             if (val == null) return ["—", String(name)];
                             const n = Number(val);
-                            return [Number.isFinite(n) ? n.toFixed(3) : "—", `${String(name)} (${unitSuffix(cmpUnit)})`];
+                            return [
+                              Number.isFinite(n) ? n.toFixed(3) : "—",
+                              `${String(name)} (${unitSuffix(cmpUnit)})`,
+                            ];
                           }}
                         />
                         <Legend />
-                        <Line type="monotone" dataKey="vibA1_disp" name="Vib A1 (RMS/min)" stroke={C.A1} dot={false} strokeWidth={2} connectNulls />
-                        <Line type="monotone" dataKey="vibA2_disp" name="Vib A2 (RMS/min)" stroke={C.A2} dot={false} strokeWidth={2} connectNulls />
+                        <Line
+                          type="monotone"
+                          dataKey="vibA1_disp"
+                          name="Vib A1 (média/min)"
+                          stroke={C.A1}
+                          dot={false}
+                          strokeWidth={2}
+                          connectNulls
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="vibA2_disp"
+                          name="Vib A2 (média/min)"
+                          stroke={C.A2}
+                          dot={false}
+                          strokeWidth={2}
+                          connectNulls
+                        />
                       </LineChart>
                     </ResponsiveContainer>
                   )}
                 </ChartContainer>
-                <div className="text-xs opacity-70 mt-2">Atualiza por push a cada minuto (WS) · Fallback poll 60s · Janela -2h · Atuador A{act}</div>
+                <div className="text-xs opacity-70 mt-2">
+                  Atualiza por push a cada minuto (WS) · Fallback poll 60s · Janela -10m · Atuador A{act}
+                </div>
               </div>
             </TabsContent>
           </Tabs>

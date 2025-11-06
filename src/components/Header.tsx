@@ -1,5 +1,5 @@
 import React from 'react';
-import { BellIcon, Menu, GaugeCircle } from 'lucide-react';
+import { BellIcon, Menu } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/context/AuthContext';
 import { toast } from '@/components/ui/use-toast';
@@ -44,8 +44,15 @@ const Header: React.FC<HeaderProps> = ({ toggleSidebar }) => {
             <Menu className="h-5 w-5" />
           </Button>
 
+          {/* === Logo (imagem) + texto === */}
           <div className="flex items-center shrink-0">
-            <GaugeCircle className="h-6 w-6 text-festo-blue mr-2" />
+            <img
+              src="/CFPreto.png"
+              alt="Logomarca"
+              className="h-8 w-auto object-contain mr-2 select-none"
+              loading="eager"
+              decoding="async"
+            />
             <h1 className="font-bold text-xl text-slate-800 dark:text-slate-100 whitespace-nowrap">
               IoTech Digitwin
             </h1>

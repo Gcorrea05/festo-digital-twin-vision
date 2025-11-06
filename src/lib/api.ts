@@ -30,7 +30,8 @@ export async function fetchJson<T = any>(
   path: string,
   init?: RequestInit & { timeoutMs?: number }
 ): Promise<T> {
-  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
+  const base = API_BASE.replace(/\/+$/,"");
+  const url = path.startsWith("http") ? path : `${base}${path.startsWith("/") ? "" : "/"}${path}`;
   const i = withTimeout({ cache: "no-store", ...(init || {}) }, init?.timeoutMs ?? 8000);
   const res = await fetch(url, i).then((r) => finalize(r, url, i));
   return (await res.json()) as T;
@@ -41,7 +42,8 @@ export async function postJson<T = any>(
   body: any,
   init?: RequestInit & { timeoutMs?: number }
 ): Promise<T> {
-  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
+  const base = API_BASE.replace(/\/+$/,"");
+  const url = path.startsWith("http") ? path : `${base}${path.startsWith("/") ? "" : "/"}${path}`;
   const i = withTimeout(
     {
       method: "POST",
@@ -506,24 +508,30 @@ async function tryMinuteAggMany(act: "A1" | "A2", since: string): Promise<Minute
   const id = act === "A1" ? "1" : "2";
   const combos: Array<Record<string, string>> = [{ actuator: id }, { id }, { act: id }];
 
+  // prioriza /api/metrics/minute-agg; depois fallbacks sem /api e em /api/slow/minute-agg
+  const bases = ["/api/metrics/minute-agg", "/metrics/minute-agg", "/api/slow/minute-agg"];
+
   for (const a of combos) {
     const qs = new URLSearchParams({ ...a, since }).toString();
-    const url = `/metrics/minute-agg?${qs}`;
-    try {
-      const raw = await fetchJson<any>(url);
-      const arr =
-        (Array.isArray(raw) && raw) ||
-        raw?.data || raw?.items || raw?.rows || raw?.results || raw?.records || [];
-      if (Array.isArray(arr) && arr.length) {
-        const out = arr.map(normalizeMinuteAggRow).filter(Boolean) as MinuteAgg[];
-        if (out.length) return out.sort((x, y) => x.minute.localeCompare(y.minute));
-      }
-    } catch {}
+    for (const base of bases) {
+      try {
+        const url = `${base}?${qs}`;
+        const raw = await fetchJson<any>(url);
+        const arr = takeArray(raw);
+        if (Array.isArray(arr) && arr.length) {
+          const out = arr.map(normalizeMinuteAggRow).filter(Boolean) as MinuteAgg[];
+          if (out.length) {
+            if (typeof window !== "undefined") console.info(`[minute-agg] hit ${base} ${JSON.stringify(a)} -> ${out.length}`);
+            return out.sort((x, y) => x.minute.localeCompare(y.minute));
+          }
+        }
+      } catch {}
+    }
   }
   return [];
 }
 
-export async function getMinuteAgg(act: "A1" | "A2", since: string): Promise<MinuteAgg[]> {
+export async function getMinuteAgg(act: "A1" | "A2", since: string = "-2h"): Promise<MinuteAgg[]> {
   return tryMinuteAggMany(act, since);
 }
 
@@ -536,17 +544,6 @@ export type MinuteAggRow = {
   cpm: number;
   vib_avg: number | null;
 };
-
-export type WSMessageMinuteAgg = {
-  type: "minute-agg";
-  ts: string;               // ISO UTC (emissão)
-  minute: string;           // ISO UTC do minuto agregado (…:00Z)
-  items: Array<{
-    actuator: "A1" | "A2";
-    row: MinuteAggRow;
-  }>;
-};
-
 
 /* ======================
    CPM × Runtime (via OPC — fallback robusto)
@@ -613,7 +610,7 @@ async function runtimeFromOpcByMinute(act: "A1" | "A2", since: string): Promise<
           d.getUTCFullYear(),
           d.getUTCMonth(),
           d.getUTCDate(),
-          d.getUTCFullYear() ? d.getUTCHours() : d.getUTCHours(), // keep ts
+          d.getUTCHours(),
           d.getUTCMinutes(),
           59,
           999
@@ -1012,6 +1009,13 @@ export type WSMessageAlertsSnapshot = {
   }[];
 };
 
+export type WSMessageMinuteAgg = {
+  type: "minute-agg";
+  ts: string;
+  minute: string;
+  items: Array<{ actuator: "A1" | "A2"; row: MinuteAggRow }>;
+};
+
 export type AnyWSMessage =
   | WSMessageLive
   | WSMessageMonitoring
@@ -1020,7 +1024,7 @@ export type AnyWSMessage =
   | WSMessageAlert
   | WSMessageAlertsSnapshot
   | WSHeartbeat
-  | WSMessageMinuteAgg 
+  | WSMessageMinuteAgg
   | WSError;
 
 export type WSHandlers = {
@@ -1038,8 +1042,9 @@ export type WSOptions = {
 };
 
 function wsUrl(path: string) {
-  const base = getApiBase();
-  const u = new URL(path.startsWith("/") ? path : `/${path}`, base);
+  const base = getApiBase().replace(/\/+$/,"");
+  const p = path.startsWith("/") ? path : `/${path}`;
+  const u = new URL(p, base);
   u.protocol = u.protocol.replace("http", "ws");
   return u.toString();
 }
@@ -1270,7 +1275,7 @@ export function openMonitoringWS(handlers: WSHandlers): WSHandle {
           type: "vibration",
           ts: mon.ts,
           window_s: Number(mon.vibration?.window_s ?? 2),
-          items: (mon.vibration?.items ?? []).map((it) => ({
+          items: (mon.vibration?.items ?? []).map((it: any) => ({
             mpu_id: Number(it.mpu_id),
             overall: Number(it.overall ?? 0),
           })),

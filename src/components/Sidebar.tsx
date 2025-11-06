@@ -15,12 +15,13 @@ type NavItem = {
   icon: IconCmp;
 };
 
+// ⬇️ Reordenado: Simulation antes de Alerts
 const navItems: NavItem[] = [
   { name: "Dashboard", to: "/", icon: Gauge },
   { name: "Monitoring", to: "/monitoring", icon: Camera },
   { name: "Analytics", to: "/analytics", icon: BarChart2 },
-  { name: "Alerts", to: "/alerts", icon: AlertCircle },
   { name: "Simulation", to: "/simulation", icon: Cpu }, // caminho em minúsculo
+  { name: "Alerts", to: "/alerts", icon: AlertCircle },
 ];
 
 function linkClasses(active: boolean) {
