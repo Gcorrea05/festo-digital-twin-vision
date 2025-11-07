@@ -71,6 +71,22 @@ async function fetchFirstOk<T>(candidates: Array<{ url: string; init?: RequestIn
   throw lastErr;
 }
 
+// --- helpers (coloque perto do getApiBase) ---
+function getWsBase(path: string) {
+  const base = getApiBase(); // você já tem getApiBase()
+  const wsProto = base.startsWith("https") ? "wss" : "ws";
+  const host = base.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  return `${wsProto}://${host}${path}`;
+}
+
+// aceita ISO com Z ou -03:00
+const toTs = (iso: string) => {
+  const d = new Date(iso);
+  const t = d.getTime();
+  return Number.isFinite(t) ? t : Date.parse(iso.replace("Z", "+00:00"));
+};
+
+
 /* ======================
    Tipos (existentes + ajustes p/ live.mpu)
    ====================== */
@@ -610,7 +626,7 @@ async function runtimeFromOpcByMinute(act: "A1" | "A2", since: string): Promise<
           d.getUTCFullYear(),
           d.getUTCMonth(),
           d.getUTCDate(),
-          d.getUTCHours(),
+          d.getUTCFullYear() ? d.getUTCFullYear() : d.getUTCFullYear(), // safeguard (noop)
           d.getUTCMinutes(),
           59,
           999
@@ -1010,11 +1026,40 @@ export type WSMessageAlertsSnapshot = {
 };
 
 export type WSMessageMinuteAgg = {
-  type: "minute-agg";
-  ts: string;
+  type: "analytics-minute-agg";
+  actuator: 1 | 2;
   minute: string;
-  items: Array<{ actuator: "A1" | "A2"; row: MinuteAggRow }>;
+  runtime_s: number;
+  vib_avg: number | null;
+  bootstrap?: boolean;
 };
+
+// ===================== Analytics WS Types =====================
+export type WSMessageAnalyticsMinuteAgg = {
+  type: "analytics-minute-agg";
+  actuator: 1 | 2;
+  minute: string;        // ISO (UTC, truncado em minuto), ex: "2025-11-06T03:42:00Z"
+  runtime_s: number;     // segundos no minuto (0..60)
+  vib_avg: number | null; // média do overall no minuto (pode ser null)
+  bootstrap?: boolean;   // true somente no primeiro ponto pós-boot
+};
+
+// ==================== [GRAFICO] Tipos ====================
+export type WSMessageGrafico = {
+  type: "grafico";
+  bootstrap?: boolean;
+  minute: string;       // ISO com offset local (-03:00)
+  window_start: string; // ISO com offset local
+  window_end: string;   // ISO com offset local
+  avg: number;
+  empty: boolean;
+  count: number;
+  window_s: number;     // 60
+  mpu_id?: number | null;
+  actuator_id?: number | null;
+  metric?: string;      // "ax" | "ay" | "az" | "mag"
+};
+
 
 export type AnyWSMessage =
   | WSMessageLive
@@ -1025,6 +1070,8 @@ export type AnyWSMessage =
   | WSMessageAlertsSnapshot
   | WSHeartbeat
   | WSMessageMinuteAgg
+  | WSMessageAnalyticsMinuteAgg
+  | WSMessageGrafico
   | WSError;
 
 export type WSHandlers = {
@@ -1343,6 +1390,95 @@ export function openSlowWS(handlers: WSHandlers): WSHandle {
     maxBackoffMs: 10000,
   });
 }
+
+// ==================== [GRAFICO] openGraficoWS ====================
+export function openGraficoWS(opts?: {
+  mpuId?: number;
+  actuatorId?: number;
+  metric?: "ax" | "ay" | "az" | "mag";
+  onMessage?: (m: WSMessageGrafico) => void;
+  onError?: (ev: Event) => void;
+  onClose?: () => void;
+}) {
+  const base = typeof getApiBase === "function"
+    ? getApiBase()
+    : ((import.meta as any)?.env?.VITE_API_BASE || (import.meta as any)?.env?.VITE_API_URL || "http://localhost:8000");
+
+  const wsBase = base.replace("http", "ws");
+  const url = new URL("/ws/grafico", wsBase);
+
+  if (opts?.mpuId != null) url.searchParams.set("mpu_id", String(opts.mpuId));
+  if (opts?.actuatorId != null) url.searchParams.set("actuator_id", String(opts.actuatorId));
+  if (opts?.metric) url.searchParams.set("metric", String(opts.metric));
+
+  const ws = new WebSocket(url.toString());
+
+  ws.onmessage = (evt) => {
+    try {
+      const msg = JSON.parse((evt as MessageEvent).data as string) as WSMessageGrafico;
+      if (msg?.type === "grafico") opts?.onMessage?.(msg);
+    } catch {
+      // ignore parse errors
+    }
+  };
+
+  ws.onerror = (ev) => opts?.onError?.(ev);
+  ws.onclose = () => opts?.onClose?.();
+
+  return {
+    close: () => { try { ws.close(); } catch {} },
+    raw: ws,
+  } as const;
+}
+
+
+/** === NOVO: WebSocket de Analytics (/ws/analytics) === */
+export function openAnalyticsWS(handlers: WSHandlers): WSHandle {
+  const url = getWsBase("/ws/analytics");
+  const ws = new WebSocket(url);
+  let paused = false;
+
+  ws.onopen  = (ev) => handlers.onOpen?.(ev);
+  ws.onerror = (ev) => handlers.onError?.(ev as Event);
+  ws.onclose = (ev) => handlers.onClose?.(ev);
+
+  ws.onmessage = (ev) => {
+    if (paused) return;
+    try {
+      const raw = JSON.parse(ev.data);
+      const t = raw?.type;
+
+      if (t === "analytics-minute-agg" || t === "minute-agg") {
+        const a = Number(raw.actuator ?? raw.id ?? raw.actuator_id);
+        const msg: WSMessageMinuteAgg = {
+          type: "analytics-minute-agg",
+          actuator: a === 2 ? 2 : 1,
+          minute: String(raw.minute),
+          runtime_s: Number(raw.runtime_s ?? 0),
+          vib_avg: raw.vib_avg == null ? null : Number(raw.vib_avg),
+          bootstrap: Boolean(raw.bootstrap),
+        };
+        handlers.onMessage?.(msg as AnyWSMessage);
+        return;
+      }
+
+      handlers.onMessage?.(raw as AnyWSMessage);
+    } catch {
+      /* ignore non-JSON / hb */
+    }
+  };
+
+  return {
+    close: () => ws.close(),
+    pause: () => { paused = true; },
+    resume: () => { paused = false; },
+    isOpen: () => ws.readyState === WebSocket.OPEN,
+    // <<<<< AQUI está o ajuste: função que retorna WebSocket | null
+    socket: () => (ws.readyState === WebSocket.CLOSED ? null : ws),
+  };
+}
+
+
 
 /* >>>> ALTERADO: openAlertsWS agora é NO-OP (não abre WebSocket) <<<< */
 export function openAlertsWS(_handlers: WSHandlers): WSHandle {

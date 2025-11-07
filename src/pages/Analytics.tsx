@@ -14,7 +14,14 @@ import {
 } from "recharts";
 import { ChartContainer, ChartTooltipContent } from "@/components/ui/chart";
 import { useMpuIds, useMpuHistory } from "@/hooks/useMpu";
-import { getMinuteAgg, openSlowWS, type WSMessageMinuteAgg } from "@/lib/api";
+import {
+  getMinuteAgg,
+  openAnalyticsWS,
+  type WSMessageAnalyticsMinuteAgg,
+  // WS novo para média/min
+  openGraficoWS,
+  type WSMessageGrafico,
+} from "@/lib/api";
 import { useActuatorSelection } from "@/context/ActuatorSelectionContext";
 
 /* ========================= Utils ========================= */
@@ -81,10 +88,19 @@ type MpuRowLike = {
 };
 type MpuPoint = { ts: string; ax: number; ay: number; az: number };
 
+// Pontos do /ws/grafico
+type GrafPoint = {
+  minute: string;    // HH:mm (apenas para exibir)
+  minuteIso: string; // ISO original com -03:00
+  avg: number;
+  empty: boolean;
+  count: number;
+};
+
 /* ===== Conversão RAW->g ===== */
 const RAW_TO_G = 1 / 16384;
 const pickG = (g?: number, raw?: number) =>
-  Number.isFinite(g) ? Number(g) : Number.isFinite(raw) ? Number(raw) * RAW_TO_G : 0;
+  Number.isFinite(g as number) ? Number(g) : Number.isFinite(raw as number) ? Number(raw) * RAW_TO_G : 0;
 
 /* ===== Média de vibração por minuto (fallback cliente) =====
    vib = max(0, sqrt(ax^2+ay^2+az^2) - 1) */
@@ -208,23 +224,24 @@ const Analytics: React.FC = () => {
     return () => clearInterval(id);
   }, [loadAgg]);
 
-  // WS minute-agg (filtra na janela)
+  // WS analytics-minute-agg (filtra na janela)
   useEffect(() => {
-    const ws = openSlowWS({
+    const ws = openAnalyticsWS({
       onMessage: (m) => {
-        if (m?.type !== "minute-agg") return;
-        const msg = m as WSMessageMinuteAgg;
-        const tag = act === 1 ? "A1" : "A2";
-        const hit = msg.items.find((it) => it.actuator === tag);
-        if (!hit) return;
-        const minute = toMinuteIsoUTC(hit.row.minute);
+        if (m?.type !== "analytics-minute-agg") return;
+        const msg = m as WSMessageAnalyticsMinuteAgg;
+        const watching = act; // 1 | 2
+        if (msg.actuator !== watching) return;
+
+        const minute = toMinuteIsoUTC(msg.minute);
         if (!withinWindow(minute)) return;
+
         setAggAct((prev) => {
           const map = new Map(prev.map((r) => [r.minute, r]));
           map.set(minute, {
             minute,
-            runtime_s: Number(hit.row.runtime_s ?? 0),
-            vib_avg: hit.row.vib_avg,
+            runtime_s: Number(msg.runtime_s ?? 0),
+            vib_avg: msg.vib_avg,
           });
           const ordered = Array.from(map.values())
             .filter((r) => withinWindow(r.minute))
@@ -235,12 +252,79 @@ const Analytics: React.FC = () => {
       },
     });
     return () => {
-      // PATCH: openSlowWS retorna WSHandle; precisa fechar com .close()
       try {
         ws?.close(1000, "analytics-unmount");
       } catch {}
     };
   }, [act]);
+
+  // ===== WS /ws/grafico — média/min (mag) =====
+  const [grafPoints, setGrafPoints] = useState<GrafPoint[]>([]);
+  const bootMinuteRef = useRef<string | null>(null); // mantém o 1º ponto (bootstrap)
+
+  useEffect(() => {
+    const toHHMM = (iso: string): string => {
+      const d = new Date(iso);
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mm = String(d.getMinutes()).padStart(2, "0");
+      return `${hh}:${mm}`;
+    };
+    const mpuIdNum = mpuId != null ? Number(mpuId) : undefined;
+
+    const h = openGraficoWS({
+      mpuId: Number.isFinite(mpuIdNum as number) ? (mpuIdNum as number) : undefined,
+      actuatorId: act,
+      metric: "mag",
+      onMessage: (msg: WSMessageGrafico) => {
+        if (msg?.type !== "grafico") return;
+
+        // armazena o minuto do bootstrap uma única vez
+        if (msg.bootstrap && !bootMinuteRef.current) {
+          bootMinuteRef.current = msg.minute;
+        }
+
+        const p: GrafPoint = {
+          minute: toHHMM(msg.minute),
+          minuteIso: msg.minute,
+          avg: Number(msg.avg ?? 0),
+          empty: Boolean(msg.empty),
+          count: Number(msg.count ?? 0),
+        };
+
+        setGrafPoints((old) => {
+          const map = new Map(old.map((x) => [x.minuteIso, x]));
+          map.set(p.minuteIso, p);
+
+          // garante o ponto inicial sempre presente
+          if (bootMinuteRef.current && !map.has(bootMinuteRef.current)) {
+            map.set(bootMinuteRef.current, {
+              minute: toHHMM(bootMinuteRef.current),
+              minuteIso: bootMinuteRef.current,
+              avg: p.avg,
+              empty: p.empty,
+              count: p.count,
+            });
+          }
+
+          const arr = Array.from(map.values()).sort((a, b) => a.minuteIso.localeCompare(b.minuteIso));
+
+          if (arr.length <= 120) return arr;
+
+          if (bootMinuteRef.current) {
+            const boot = arr.find((x) => x.minuteIso === bootMinuteRef.current)!;
+            const rest = arr.filter((x) => x.minuteIso !== bootMinuteRef.current);
+            return [boot, ...rest.slice(-119)];
+          }
+          return arr.slice(-120);
+        });
+      },
+    });
+
+    return () => {
+      try { h.close(); } catch {}
+      // NÃO limpar grafPoints aqui para preservar o histórico ao trocar de gráfico
+    };
+  }, [mpuId, act]);
 
   // ===== Fallback vibração cliente =====
   const vibClientFallback = useMemo(() => {
@@ -250,6 +334,19 @@ const Analytics: React.FC = () => {
 
   // ===== Dados finais Vibração/Runtime =====
   const vibRtPoints = useMemo(() => {
+    // 1) Preferir WS /ws/grafico (avg por minuto)
+    const wsGraf = (grafPoints ?? [])
+      .map((g) => ({
+        minute: toMinuteIsoUTC(g.minuteIso),
+        runtime: 0,
+        vib: Number(g.avg ?? 0),
+        _empty: g.empty,
+      }))
+      .filter((p) => withinWindow(p.minute));
+
+    if (wsGraf.length) return wsGraf;
+
+    // 2) Depois, usar API/WS analytics-minute-agg
     const apiPoints = (aggAct ?? [])
       .filter((r) => typeof r.runtime_s === "number" && r.vib_avg != null)
       .map((r) => ({
@@ -258,8 +355,10 @@ const Analytics: React.FC = () => {
         vib: Number(r.vib_avg ?? 0),
       }));
     if (apiPoints.length) return apiPoints;
+
+    // 3) Fallback cliente
     return vibClientFallback.map((r) => ({ minute: r.minute, runtime: 0, vib: r.vib }));
-  }, [aggAct, vibClientFallback]);
+  }, [grafPoints, aggAct, vibClientFallback]);
 
   const vibRtUnit: Unit = useMemo(() => {
     const maxV = Math.max(0, ...vibRtPoints.map((p) => Number(p.vib ?? 0)));
@@ -281,9 +380,11 @@ const Analytics: React.FC = () => {
     if (!a1.length && !a2.length) return [];
     const mapA1 = new Map(a1.map((r) => [r.minute, r.vib]));
     const mapA2 = new Map(a2.map((r) => [r.minute, r.vib]));
-    const allKeys = [...new Set<string>>([...mapA1.keys(), ...mapA2.keys()])]
+
+    const allKeys = [...new Set<string>([...mapA1.keys(), ...mapA2.keys()])]
       .filter(withinWindow)
       .sort();
+
     return allKeys.map((minute) => ({
       minute,
       vibA1: mapA1.get(minute) ?? null,
@@ -457,7 +558,7 @@ const Analytics: React.FC = () => {
                   )}
                 </ChartContainer>
                 <div className="text-xs opacity-70 mt-2">
-                  Atualiza por push a cada minuto (WS) · Fallback poll 60s · Janela -10m · Atuador A{act}
+                  Atualiza por push a cada minuto (WS /ws/analytics e /ws/grafico) · Fallback poll 60s · Janela -10m · Atuador A{act}
                 </div>
               </div>
             </TabsContent>
