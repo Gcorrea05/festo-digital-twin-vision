@@ -306,12 +306,14 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
       {[
-        { title: "Ciclos por minuto", value: cpm != null ? cpm.toFixed(1) : "—" },
+        // 1ª linha (nova ordem)
         { title: "Sistema Ligado", value: systemText },
         {
           title: "Vibração",
           value: vibOverall != null ? `${(vibOverall - 1).toFixed(3)} g` : "—",
         },
+        { title: "Ciclos por minuto", value: cpm != null ? cpm.toFixed(1) : "—" },
+        // 2ª linha (igual)
         { title: "Tempo para Abrir", value: fmtMs(tOpenMs) },
         { title: "Tempo para Fechar", value: fmtMs(tCloseMs) },
         { title: "Tempo do Ciclo", value: fmtMs(tCycleMs) },

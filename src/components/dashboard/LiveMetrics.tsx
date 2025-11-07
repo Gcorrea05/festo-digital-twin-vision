@@ -102,7 +102,6 @@ const LiveMetrics: React.FC = () => {
             <div className="text-xl md:text-2xl font-extrabold">{systemText}</div>
             {tsISO && (
               <div className="text-xs text-slate-400 mt-1">
-                last: {new Date(tsISO).toLocaleTimeString()}
               </div>
             )}
           </div>

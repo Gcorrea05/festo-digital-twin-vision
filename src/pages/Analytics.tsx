@@ -381,7 +381,7 @@ const Analytics: React.FC = () => {
     const mapA1 = new Map(a1.map((r) => [r.minute, r.vib]));
     const mapA2 = new Map(a2.map((r) => [r.minute, r.vib]));
 
-    const allKeys = [...new Set<string>([...mapA1.keys(), ...mapA2.keys()])]
+    const allKeys = [...new Set<string>>([...mapA1.keys(), ...mapA2.keys()])]
       .filter(withinWindow)
       .sort();
 
@@ -418,23 +418,25 @@ const Analytics: React.FC = () => {
           <CardTitle className="text-3xl md:text-4xl font-extrabold tracking-tight">
             Análise de Desempenho
           </CardTitle>
-          <div className="inline-flex rounded-2xl bg-muted/40 p-1 border border-border/60">
+
+          {/* Toggle Atuador 1/2 — forçado com data-[active=true] para evitar conflitos de CSS */}
+          <div className="inline-flex rounded-2xl bg-black/30 p-1 border border-white/10">
             <button
-              className={[
-                "px-4 py-2 text-sm font-medium rounded-xl transition focus:outline-none",
-                "bg-transparent",
-                act === 1 ? "bg-sky-600 text-white" : "text-foreground/80 hover:text-foreground",
-              ].join(" ")}
+              data-active={act === 1}
+              className="px-4 py-1.5 text-sm rounded-lg transition-colors
+                         bg-transparent text-white/80 hover:text-white
+                         data-[active=true]:bg-cyan-600 data-[active=true]:text-white"
+              aria-pressed={act === 1}
               onClick={() => setSelectedId(1)}
             >
               Atuador 1
             </button>
             <button
-              className={[
-                "px-4 py-2 text-sm font-medium rounded-xl transition focus:outline-none",
-                "bg-transparent",
-                act === 2 ? "bg-sky-600 text-white" : "text-foreground/80 hover:text-foreground",
-              ].join(" ")}
+              data-active={act === 2}
+              className="px-4 py-1.5 text-sm rounded-lg transition-colors
+                         bg-transparent text-white/80 hover:text-white
+                         data-[active=true]:bg-cyan-600 data-[active=true]:text-white"
+              aria-pressed={act === 2}
               onClick={() => setSelectedId(2)}
             >
               Atuador 2

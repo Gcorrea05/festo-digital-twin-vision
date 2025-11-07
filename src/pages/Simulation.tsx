@@ -10,7 +10,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 
 /** ================== Tipos ================== */
 type CatalogItem = {
@@ -221,16 +221,10 @@ export default function Simulation() {
         </header>
 
         <Card>
-          <CardHeader className="pb-3">
-            <CardTitle>Modelo</CardTitle>
-          </CardHeader>
-
-        <CardContent className="space-y-4">
-            {/* RESET controlado pela key */}
-            <div
-              ref={modelWrapRef}
-              className="rounded-2xl border border-slate-800 bg-slate-950 p-4"
-            >
+          {/* Removido: CardHeader/Title "Modelo" */}
+          <CardContent className="space-y-4">
+            {/* RESET controlado pela key; enquadramento interno removido */}
+            <div ref={modelWrapRef}>
               <ThreeDModel key={modelKey} paused={paused3D} />
             </div>
 
@@ -252,7 +246,7 @@ export default function Simulation() {
                   onChange={(e) => {
                     setSelectedCode(e.target.value);
                     setScenario(null);
-                    setPaused3D(true); // volta pausado
+                    setPaused3D(true);      // volta pausado
                     setModelKey((k) => k + 1); // RESET: retorna à pose inicial
                   }}
                 >
@@ -358,7 +352,7 @@ export default function Simulation() {
                     <Button
                       variant="destructive"
                       onClick={() => {
-                        // ✅ apenas o pedido: voltar o 3D ao início
+                        // ✅ volta o 3D ao início ao encerrar
                         setOpenDlg(false);
                         setScenario(null);
                         setModelKey((k) => k + 1); // <<< RESETA O 3D

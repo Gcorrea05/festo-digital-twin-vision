@@ -150,7 +150,7 @@ function AlertsTable({
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-3xl font-extrabold">
-          Últimos alertas (mock)
+          Histórico de Alertas
         </CardTitle>
       </CardHeader>
 
@@ -208,7 +208,7 @@ const AlertsPage: React.FC = () => {
           <div>
             <h1>Alerts</h1>
             <p className="page-subtitle">
-              Últimos alertas mockados do sistema.
+              Histórico dos últimos alertas do sistema.
             </p>
           </div>
           <AlertsConfigSheet />
