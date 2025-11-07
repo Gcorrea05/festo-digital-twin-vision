@@ -307,7 +307,7 @@ const LiveMetricsMon: React.FC<Props> = ({ selectedId }) => {
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
       {[
         // 1ª linha (nova ordem)
-        { title: "Sistema Ligado", value: systemText },
+        { title: "Status do Atuador", value: systemText },
         {
           title: "Vibração",
           value: vibOverall != null ? `${(vibOverall - 1).toFixed(3)} g` : "—",
