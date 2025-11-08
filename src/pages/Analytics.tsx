@@ -90,8 +90,8 @@ type MpuPoint = { ts: string; ax: number; ay: number; az: number };
 
 // Pontos do /ws/grafico
 type GrafPoint = {
-  minute: string;    // HH:mm (apenas para exibir)
-  minuteIso: string; // ISO original com -03:00
+  minute: string; // HH:mm (apenas para exibir)
+  minuteIso: string; // ISO original com -03:00 (ou Z no sintético)
   avg: number;
   empty: boolean;
   count: number;
@@ -306,7 +306,25 @@ const Analytics: React.FC = () => {
             });
           }
 
-          const arr = Array.from(map.values()).sort((a, b) => a.minuteIso.localeCompare(b.minuteIso));
+          let arr = Array.from(map.values()).sort((a, b) => a.minuteIso.localeCompare(b.minuteIso));
+
+          // >>>>>> NOVO: se só tiver 1 ponto, cria um 2º sintético pra já ter linha
+          if (arr.length === 1) {
+            const only = arr[0];
+            const d = new Date(only.minuteIso);
+            const d2 = new Date(d.getTime() + 60_000); // +1 minuto
+            const minuteIso2 = d2.toISOString();
+            const fake: GrafPoint = {
+              minute: toHHMM(minuteIso2),
+              minuteIso: minuteIso2,
+              avg: only.avg,
+              empty: only.empty,
+              count: only.count,
+            };
+            arr.push(fake);
+            arr.sort((a, b) => a.minuteIso.localeCompare(b.minuteIso));
+          }
+          // <<<<<< FIM DO NOVO TRECHO
 
           if (arr.length <= 120) return arr;
 
@@ -321,7 +339,9 @@ const Analytics: React.FC = () => {
     });
 
     return () => {
-      try { h.close(); } catch {}
+      try {
+        h.close();
+      } catch {}
       // NÃO limpar grafPoints aqui para preservar o histórico ao trocar de gráfico
     };
   }, [mpuId, act]);
